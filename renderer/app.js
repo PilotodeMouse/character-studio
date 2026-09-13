@@ -388,10 +388,16 @@ function onPreviewCanvasMouseDown(e) {
   }
   if (e.button !== 0) return;
 
+  const hit = hitTestCraftpixPart(x, y, state.lastPose);
   if (!state.selectedBone) {
-    const hit = hitTestCraftpixPart(x, y, state.lastPose);
     if (!hit) return;
     selectPart(hit);
+  } else if (!hit) {
+    // clicou fora de qualquer peca (canvas vazio) -- desmarca em vez de
+    // arrastar as cegas a selecao atual pra um lugar aleatorio.
+    selectPart(null);
+    onPreviewTime();
+    return;
   }
 
   document.getElementById('preview-canvas').classList.add('dragging');
