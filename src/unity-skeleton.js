@@ -104,7 +104,7 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
     ctx.rotate((angleDeg * Math.PI) / 180);
     ctx.scale(
       item.world.scaleX * (item.sprite.flipX ? -1 : 1),
-      item.world.scaleY * (CONVENTION.flipY ? -1 : 1) * (item.sprite.flipY ? -1 : 1)
+      item.world.scaleY * (item.sprite.flipY ? -1 : 1)
     );
     const offsetX = -pivot.pivotX * w;
     const offsetY = -pivot.pivotY * h;

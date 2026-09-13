@@ -3,12 +3,16 @@
 // (GameObject + Transform + SpriteRenderer + AnimationClip).
 const { parseUnityYaml } = require('./unity-yaml');
 
-// Unity guarda posicao/escala em "unidades", nao pixels. spritePixelsToUnits
-// e sempre 100 nesses pacotes Craftpix (confirmado no .meta de cada PNG), e
-// bate exatamente com as coordenadas em pixel do proprio .scml -- entao so
-// multiplicamos por esse fator pra voltar ao espaco de pixel que ja usamos
-// no resto do projeto.
-const PIXELS_PER_UNIT = 100;
+// Unity guarda posicao/escala em "unidades", nao pixels. O .meta de cada PNG
+// diz spritePixelsToUnits=100, e multiplicar por 100 reconstroi exatamente
+// as coordenadas cruas do .scml (x=223.805732 etc -- conferido byte a byte).
+// MAS o .scml embutido nesses pacotes (so a pose "Base", usada para montar o
+// rig) foi exportado numa escala 2x maior do que a usada pra gerar os PNGs
+// oficiais da Craftpix: renderizando com fator 100 o personagem sai
+// "esparramado" (gaps entre cabeca/corpo/pernas que nao existem na arte de
+// referencia); com fator 50 a montagem bate com a arte oficial. Calibrado
+// visualmente contra os PNG Sequences originais -- ver README.
+const PIXELS_PER_UNIT = 50;
 
 function buildRig(prefabAssetText, guidToPathname) {
   const docs = parseUnityYaml(prefabAssetText);
