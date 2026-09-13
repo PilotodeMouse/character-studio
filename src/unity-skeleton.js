@@ -65,13 +65,16 @@ function computePose(rig, clip, t, zIndexByName) {
 }
 
 // images: Map<pngName, HTMLImageElement>. pivots: Map<pngName, {pivotX,pivotY,width,height}>
-// (do scml-parser, que tem exatamente esses valores por arquivo).
+// (do scml-parser, que tem exatamente esses valores por arquivo). Quando o
+// item tem um pivotOverride (de applyManualOverrides), ele substitui so o
+// pivotX/pivotY do arquivo, mantendo width/height reais da imagem.
 function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
   for (const item of pose) {
     if (item.sprite.alpha <= 0) continue;
     const img = images.get(item.sprite.pngName);
-    const pivot = pivots.get(item.sprite.pngName);
-    if (!img || !pivot) continue;
+    const filePivot = pivots.get(item.sprite.pngName);
+    if (!img || !filePivot) continue;
+    const pivot = item.pivotOverride ? { ...filePivot, ...item.pivotOverride } : filePivot;
 
     const w = pivot.width;
     const h = pivot.height;
@@ -95,17 +98,17 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
   }
 }
 
-// Aplica correcoes manuais por osso (offsets do usuario, ajustados por
-// arrastar no preview) SEM tocar nos dados extraidos do Unity -- e so uma
-// camada por cima, opcional, guardada a parte no rig-profile. Chame depois
-// de computePose(), antes de drawPose().
-// overrides: Map<boneName, {dx,dy,dangle}>
+// Aplica correcoes manuais por osso (offset de posicao/angulo, pivo e
+// camada) SEM tocar nos dados extraidos do Unity -- e so uma camada por
+// cima, opcional, guardada a parte no rig-profile. Chame depois de
+// computePose(), antes de drawPose().
+// overrides: Map<boneName, {dx,dy,dangle,pivotX,pivotY,zIndex}> (todos opcionais)
 function applyManualOverrides(pose, overrides) {
   if (!overrides || overrides.size === 0) return pose;
-  return pose.map((item) => {
+  const withOverrides = pose.map((item) => {
     const o = overrides.get(item.boneName);
     if (!o) return item;
-    return {
+    const next = {
       ...item,
       world: {
         ...item.world,
@@ -114,7 +117,14 @@ function applyManualOverrides(pose, overrides) {
         angle: item.world.angle + (o.dangle || 0),
       },
     };
+    if (o.pivotX !== undefined && o.pivotY !== undefined) {
+      next.pivotOverride = { pivotX: o.pivotX, pivotY: o.pivotY };
+    }
+    if (o.zIndex !== undefined) next.zIndex = o.zIndex;
+    return next;
   });
+  withOverrides.sort((a, b) => a.zIndex - b.zIndex);
+  return withOverrides;
 }
 
 module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg, applyManualOverrides };

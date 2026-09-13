@@ -126,6 +126,7 @@ async function onPickPack() {
 
   applyRigProfileIfKnown();
   onPreviewTime();
+  renderLayersList();
 }
 
 function applyRigProfileIfKnown() {
@@ -230,9 +231,70 @@ function selectPart(boneName) {
   state.selectedBone = boneName;
   document.getElementById('sel-part-name').textContent = boneName || '(nenhuma peca selecionada)';
   const o = state.partOffsets.get(boneName) || { dx: 0, dy: 0, dangle: 0 };
-  document.getElementById('part-offset-x').value = o.dx;
-  document.getElementById('part-offset-y').value = o.dy;
-  document.getElementById('part-offset-angle').value = o.dangle;
+  document.getElementById('part-offset-x').value = o.dx || 0;
+  document.getElementById('part-offset-y').value = o.dy || 0;
+  document.getElementById('part-offset-angle').value = o.dangle || 0;
+
+  const bone = boneName && [...state.rig.bones.values()].find((b) => b.name === boneName);
+  const filePivot = bone && bone.sprite && state.pivots.get(bone.sprite.pngName);
+  document.getElementById('part-pivot-x').value = o.pivotX !== undefined ? o.pivotX : filePivot ? filePivot.pivotX : 0;
+  document.getElementById('part-pivot-y').value = o.pivotY !== undefined ? o.pivotY : filePivot ? filePivot.pivotY : 1;
+
+  renderLayersList();
+}
+
+// Camadas visiveis, na ordem de desenho atual (zIndex efetivo = override
+// manual > z_index do .scml > sortingOrder do Unity). O botao ^/v atribui
+// um zIndex explicito pra trocar de posicao com o vizinho, sem depender do
+// numero "real" do arquivo original.
+function currentLayers() {
+  const bones = [...state.rig.bones.values()].filter((b) => b.sprite && b.sprite.pngName);
+  return bones
+    .map((b) => {
+      const o = state.partOffsets.get(b.name);
+      const z = o && o.zIndex !== undefined ? o.zIndex : state.zIndexByName.get(b.name) ?? b.sprite.sortingOrder ?? 0;
+      return { boneName: b.name, z };
+    })
+    .sort((a, b) => a.z - b.z);
+}
+
+function renderLayersList() {
+  if (!state.rig) return;
+  const layers = currentLayers();
+  const el = document.getElementById('layers-list');
+  el.innerHTML = '';
+  // de cima (frente) pra baixo (fundo) na lista, como no Photoshop
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    const row = document.createElement('div');
+    row.className = 'layer-row' + (state.selectedBone === layer.boneName ? ' selected' : '');
+    row.innerHTML = `<span class="layer-name">${layer.boneName}</span><button class="layer-btn" data-dir="up">&#9650;</button><button class="layer-btn" data-dir="down">&#9660;</button>`;
+    row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
+    row.querySelectorAll('.layer-btn').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        moveLayer(layer.boneName, btn.dataset.dir);
+      });
+    });
+    el.appendChild(row);
+  }
+}
+
+function moveLayer(boneName, dir) {
+  const layers = currentLayers();
+  const idx = layers.findIndex((l) => l.boneName === boneName);
+  const swapIdx = dir === 'up' ? idx + 1 : idx - 1;
+  if (swapIdx < 0 || swapIdx >= layers.length) return;
+  // reatribui zIndex inteiro sequencial pra todo mundo (evita empates) e
+  // troca os dois que o usuario pediu pra trocar.
+  const order = layers.map((l) => l.boneName);
+  [order[idx], order[swapIdx]] = [order[swapIdx], order[idx]];
+  order.forEach((name, i) => {
+    const existing = state.partOffsets.get(name) || {};
+    state.partOffsets.set(name, { ...existing, zIndex: i });
+  });
+  renderLayersList();
+  onPreviewTime();
 }
 
 function hitTestCraftpixPart(xLocal, yLocal, pose) {
@@ -291,7 +353,7 @@ function onPreviewCanvasMouseMove(e) {
   const { x, y } = canvasEventToLocalCraftpix(e);
   const dx = x - state.drag.startX;
   const dy = y - state.drag.startY;
-  const o = { dx: state.drag.start.dx + dx, dy: state.drag.start.dy - dy, dangle: state.drag.start.dangle };
+  const o = { ...state.drag.start, dx: (state.drag.start.dx || 0) + dx, dy: (state.drag.start.dy || 0) - dy };
   state.partOffsets.set(state.selectedBone, o);
   document.getElementById('part-offset-x').value = o.dx.toFixed(1);
   document.getElementById('part-offset-y').value = o.dy.toFixed(1);
@@ -305,10 +367,14 @@ function onPreviewCanvasMouseUp() {
 
 function applyOffsetFieldsToSelected() {
   if (!state.selectedBone) return;
+  const existing = state.partOffsets.get(state.selectedBone) || {};
   state.partOffsets.set(state.selectedBone, {
+    ...existing,
     dx: parseFloat(document.getElementById('part-offset-x').value) || 0,
     dy: parseFloat(document.getElementById('part-offset-y').value) || 0,
     dangle: parseFloat(document.getElementById('part-offset-angle').value) || 0,
+    pivotX: parseFloat(document.getElementById('part-pivot-x').value),
+    pivotY: parseFloat(document.getElementById('part-pivot-y').value),
   });
   onPreviewTime();
 }
@@ -433,6 +499,8 @@ document.getElementById('btn-bake').addEventListener('click', onBakeClick);
 document.getElementById('part-offset-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-y').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-angle').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-pivot-x').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-pivot-y').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('btn-reset-part-offset').addEventListener('click', () => {
   if (!state.selectedBone) return;
   state.partOffsets.delete(state.selectedBone);
@@ -454,6 +522,7 @@ createPlayback({
     return cfg.idleClip ? cfg.idleClip.length : 1;
   },
   onTick: onPreviewTime,
+  getSpeed: () => parseFloat(document.getElementById('preview-sel-speed').value) || 1,
 });
 
 function setMode(mode) {

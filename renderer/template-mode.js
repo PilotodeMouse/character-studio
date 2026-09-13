@@ -420,5 +420,6 @@ createPlayback({
   playButtonEl: document.getElementById('tpl-preview-btn-play'),
   getMax: () => getTemplate(document.getElementById('tpl-sel-anim').value).length / 1000,
   onTick: tplTick,
+  getSpeed: () => parseFloat(document.getElementById('tpl-preview-sel-speed').value) || 1,
 });
 })();

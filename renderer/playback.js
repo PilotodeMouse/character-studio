@@ -1,7 +1,7 @@
 // Controlador de play/stop/loop generico, reusado pelos dois modos
 // (Craftpix e Template). Avanca um <input type=range> (em segundos) via
 // requestAnimationFrame e chama onTick() a cada frame.
-function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick }) {
+function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick, getSpeed }) {
   let playing = false;
   let rafId = null;
   let lastTs = null;
@@ -9,7 +9,8 @@ function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick
   function tick(ts) {
     if (!playing) return;
     if (lastTs === null) lastTs = ts;
-    const dt = (ts - lastTs) / 1000;
+    const speed = getSpeed ? getSpeed() : 1;
+    const dt = ((ts - lastTs) / 1000) * speed;
     lastTs = ts;
 
     const max = getMax();
