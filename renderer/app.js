@@ -36,6 +36,9 @@ let state = {
   lastCfg: null,
   drag: null,
   referenceImage: null,
+  refScale: 1,
+  refOffsetX: 0,
+  refOffsetY: 0,
   zoom: 1,
 };
 
@@ -247,9 +250,17 @@ function onPreviewTime() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (state.referenceImage) {
+    // Escala uniforme (mesmo fator nos dois eixos) pra nao distorcer a
+    // proporcao original da imagem -- centralizada na celula, com
+    // deslocamento manual por cima (ver fitReferenceToCell/ref-offset-*).
+    const img = state.referenceImage;
+    const rw = img.width * state.refScale;
+    const rh = img.height * state.refScale;
+    const rx = (cell.w - rw) / 2 + state.refOffsetX;
+    const ry = (cell.h - rh) / 2 + state.refOffsetY;
     ctx.save();
     ctx.globalAlpha = parseFloat(document.getElementById('ref-opacity').value) || 0.6;
-    ctx.drawImage(state.referenceImage, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, rx, ry, rw, rh);
     ctx.restore();
   }
 
@@ -673,25 +684,63 @@ document.getElementById('num-offset-x').addEventListener('input', onPreviewTime)
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
-document.getElementById('preview-chk-checker').addEventListener('change', (e) => {
-  document.getElementById('preview-canvas').classList.toggle('no-checker', !e.target.checked);
+document.getElementById('preview-sel-bg').addEventListener('change', (e) => {
+  const canvas = document.getElementById('preview-canvas');
+  canvas.classList.toggle('bg-checker', e.target.value === 'checker');
+  canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
 });
 document.getElementById('preview-chk-guides').addEventListener('change', onPreviewTime);
+
+// Encontra a escala que faz a referencia caber inteira dentro da celula sem
+// distorcer a proporcao original (equivalente ao "contain" do CSS), depois
+// centraliza -- e o ponto de partida; escala/deslocamento continuam
+// ajustaveis a mao pelos campos ao lado.
+function fitReferenceToCell() {
+  if (!state.referenceImage) return;
+  const cfg = readConfig();
+  const cell = cellSpecFor(cfg.size);
+  const img = state.referenceImage;
+  state.refScale = Math.min(cell.w / img.width, cell.h / img.height);
+  state.refOffsetX = 0;
+  state.refOffsetY = 0;
+  document.getElementById('ref-scale').value = state.refScale.toFixed(3);
+  document.getElementById('ref-offset-x').value = 0;
+  document.getElementById('ref-offset-y').value = 0;
+}
 
 document.getElementById('btn-load-reference').addEventListener('click', async () => {
   const filePath = await ipcRenderer.invoke('select-reference-image');
   if (!filePath) return;
   const img = await loadImageAnyFormat(filePath);
   state.referenceImage = img;
+  fitReferenceToCell();
   document.getElementById('btn-clear-reference').disabled = false;
+  document.getElementById('reference-controls').style.display = 'flex';
   onPreviewTime();
 });
 document.getElementById('btn-clear-reference').addEventListener('click', (e) => {
   state.referenceImage = null;
   e.target.disabled = true;
+  document.getElementById('reference-controls').style.display = 'none';
   onPreviewTime();
 });
 document.getElementById('ref-opacity').addEventListener('input', onPreviewTime);
+document.getElementById('ref-scale').addEventListener('input', () => {
+  state.refScale = parseFloat(document.getElementById('ref-scale').value) || 1;
+  onPreviewTime();
+});
+document.getElementById('ref-offset-x').addEventListener('input', () => {
+  state.refOffsetX = parseFloat(document.getElementById('ref-offset-x').value) || 0;
+  onPreviewTime();
+});
+document.getElementById('ref-offset-y').addEventListener('input', () => {
+  state.refOffsetY = parseFloat(document.getElementById('ref-offset-y').value) || 0;
+  onPreviewTime();
+});
+document.getElementById('btn-ref-fit').addEventListener('click', () => {
+  fitReferenceToCell();
+  onPreviewTime();
+});
 
 // Zoom centrado no mouse: guarda o ponto do canvas sob o cursor antes de
 // mudar o zoom e realinha o scroll do viewport pra ele continuar sob o

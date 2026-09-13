@@ -409,7 +409,7 @@ document.getElementById('tpl-num-scale').addEventListener('input', tplTick);
 document.getElementById('tpl-num-offset-x').addEventListener('input', tplTick);
 document.getElementById('tpl-num-offset-y').addEventListener('input', tplTick);
 document.getElementById('tpl-preview-chk-checker').addEventListener('change', (e) => {
-  document.getElementById('tpl-preview-canvas').classList.toggle('no-checker', !e.target.checked);
+  document.getElementById('tpl-preview-canvas').classList.toggle('bg-checker', e.target.checked);
 });
 document.getElementById('tpl-btn-save-binding').addEventListener('click', onTplSaveBinding);
 document.getElementById('tpl-btn-bake').addEventListener('click', onTplBake);
