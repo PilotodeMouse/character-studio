@@ -32,4 +32,30 @@ function cellSpecFor(size) {
   return spec;
 }
 
-module.exports = { CELL_BY_SIZE, ROWS, MIRRORED_FROM, REAL_ROWS, ANIMATIONS, EXPORT, cellSpecFor };
+// A partir de uma caixa envolvente (relativa ao proprio osso-raiz, ver
+// computeAnimatedBounds em unity-skeleton.js/template-skeleton.js) e da
+// celula de saida, acha o maior fator de escala que faz a peca caber dentro
+// da celula com uma margem de seguranca fixa dos 4 lados -- nunca aumenta
+// (o "1" e o teto), so encolhe o suficiente pra nao cortar em nenhum lado.
+// Os 4 lados tem folgas diferentes porque a origem (bodyAxisX,groundLineY)
+// fica perto do CHAO da celula, nao no centro: quase toda a folga vertical
+// esta ACIMA da origem, e quase nenhuma abaixo.
+function fitScaleForBounds(bounds, cell, margin = 8) {
+  const neededLeft = Math.max(0, -bounds.minX);
+  const neededRight = Math.max(0, bounds.maxX);
+  const neededUp = Math.max(0, -bounds.minY);
+  const neededDown = Math.max(0, bounds.maxY);
+  const availLeft = cell.bodyAxisX - margin;
+  const availRight = cell.w - cell.bodyAxisX - margin;
+  const availUp = cell.groundLineY - margin;
+  const availDown = cell.h - cell.groundLineY - margin;
+
+  let scale = 1;
+  if (neededLeft > 0) scale = Math.min(scale, availLeft / neededLeft);
+  if (neededRight > 0) scale = Math.min(scale, availRight / neededRight);
+  if (neededUp > 0) scale = Math.min(scale, availUp / neededUp);
+  if (neededDown > 0) scale = Math.min(scale, availDown / neededDown);
+  return Math.max(0.05, scale);
+}
+
+module.exports = { CELL_BY_SIZE, ROWS, MIRRORED_FROM, REAL_ROWS, ANIMATIONS, EXPORT, cellSpecFor, fitScaleForBounds };

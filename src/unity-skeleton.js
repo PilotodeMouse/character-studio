@@ -75,6 +75,55 @@ function findAnimatedAncestorName(rig, clip, boneName) {
   return boneName;
 }
 
+// Caixa envolvente (AABB) de todas as pecas com sprite, relativa ao proprio
+// osso-raiz (SEM somar a origem da celula), amostrando o clip em varios
+// pontos no tempo -- um unico frame nao basta pra saber o alcance maximo,
+// ja que bracos/cabeca se movem. Usado pra descobrir se o personagem cabe
+// numa celula de saida sem cortar (ver fitScaleForBounds em vtt-standards.js).
+function computeAnimatedBounds(rig, clip, pivots, partOffsets, samples = 12) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i <= samples; i++) {
+    const t = clip ? (i / samples) * clip.length : 0;
+    const rawPose = computePose(rig, clip, t, null, partOffsets);
+    const pose = applyManualOverrides(rawPose, partOffsets);
+    for (const item of pose) {
+      if (item.sprite.alpha <= 0) continue;
+      const filePivot = pivots.get(item.sprite.pngName);
+      if (!filePivot) continue;
+      const pivot = item.pivotOverride ? { ...filePivot, ...item.pivotOverride } : filePivot;
+      const w = pivot.width;
+      const h = pivot.height;
+      const px = item.world.x;
+      const py = CONVENTION.flipY ? -item.world.y : item.world.y;
+      const angleDeg = CONVENTION.invertAngle ? -item.world.angle : item.world.angle;
+      const angleRad = (angleDeg * Math.PI) / 180;
+      const cos = Math.cos(angleRad);
+      const sin = Math.sin(angleRad);
+      const sx = item.world.scaleX * (item.sprite.flipX ? -1 : 1);
+      const sy = item.world.scaleY * (item.sprite.flipY ? -1 : 1);
+      const offsetX = -pivot.pivotX * w;
+      const offsetY = -pivot.pivotY * h;
+      const corners = [
+        [offsetX, offsetY],
+        [offsetX + w, offsetY],
+        [offsetX, offsetY + h],
+        [offsetX + w, offsetY + h],
+      ];
+      for (const [lx, ly] of corners) {
+        const sxp = lx * sx;
+        const syp = ly * sy;
+        const wx = px + (sxp * cos - syp * sin);
+        const wy = py + (sxp * sin + syp * cos);
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+        if (wy < minY) minY = wy;
+        if (wy > maxY) maxY = wy;
+      }
+    }
+  }
+  return { minX, maxX, minY, maxY };
+}
+
 // pose(t) -> array de { zIndex, boneName, world, sprite } ordenado por zIndex
 // zIndexByName (opcional): Map<nomeDaParte, z_index> vindo do .scml, usado
 // como override porque o m_SortingOrder do Unity vem zerado pra tudo nesses
@@ -180,4 +229,12 @@ function applyManualOverrides(pose, overrides) {
   return withOverrides;
 }
 
-module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg, applyManualOverrides, findAnimatedAncestorName };
+module.exports = {
+  computePose,
+  drawPose,
+  CONVENTION,
+  quatToAngleDeg,
+  applyManualOverrides,
+  findAnimatedAncestorName,
+  computeAnimatedBounds,
+};

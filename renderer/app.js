@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
@@ -16,7 +16,7 @@ const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT, cellSpecFor } = require('../src/vtt-standards');
+const { EXPORT, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -125,8 +125,25 @@ async function onPickPack() {
   document.getElementById('txt-character-name').value = toKebabCase(path.basename(folder));
 
   applyRigProfileIfKnown();
+  applyAutoFitScale();
   onPreviewTime();
   renderLayersList();
+}
+
+// Reduz (nunca aumenta) a "Escala do personagem dentro da celula" o quanto
+// for preciso pra o personagem caber no tamanho de saida escolhido com 8px
+// de margem em cada lado, amostrando o alcance real do clip de Idle (bracos/
+// cabeca se movem, um frameso nao basta). Roda ao carregar o personagem e ao
+// trocar o tamanho -- a escala e diferente por tamanho porque a arte tem
+// dimensao fixa em pixels e as celulas 1x1/2x2/3x3 nao.
+function applyAutoFitScale() {
+  if (!state.rig) return;
+  const cfg = readConfig();
+  if (!cfg.idleClip) return;
+  const cell = cellSpecFor(cfg.size);
+  const bounds = computeAnimatedBounds(state.rig, cfg.idleClip, state.pivots, state.partOffsets);
+  const scale = fitScaleForBounds(bounds, cell, 8);
+  document.getElementById('num-scale').value = scale.toFixed(3);
 }
 
 function applyRigProfileIfKnown() {
@@ -141,7 +158,7 @@ function applyRigProfileIfKnown() {
       'ok',
       `Rig conhecido (assinatura <code>${rigId.slice(0, 8)}</code>) -- essa e a mesma estrutura de esqueleto de "${profile.sourceCharacterName}". Preferencias de bake aplicadas automaticamente.`
     );
-    document.getElementById('sel-size').value = profile.size || '2x2';
+    document.getElementById('sel-size').value = profile.size || '1x1';
     document.getElementById('num-frames-idle').value = profile.framesIdle || 4;
     document.getElementById('num-frames-walk').value = profile.framesWalk || 4;
     document.getElementById('num-scale').value = profile.scale || 1;
@@ -563,7 +580,10 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
-document.getElementById('sel-size').addEventListener('change', onPreviewTime);
+document.getElementById('sel-size').addEventListener('change', () => {
+  applyAutoFitScale();
+  onPreviewTime();
+});
 document.getElementById('preview-time').addEventListener('input', onPreviewTime);
 document.getElementById('num-scale').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-x').addEventListener('input', onPreviewTime);
