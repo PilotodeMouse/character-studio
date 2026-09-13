@@ -312,3 +312,28 @@ document.getElementById('num-offset-x').addEventListener('input', onPreviewTime)
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
+
+createPlayback({
+  sliderEl: document.getElementById('preview-time'),
+  loopCheckboxEl: document.getElementById('preview-chk-loop'),
+  playButtonEl: document.getElementById('preview-btn-play'),
+  getMax: () => {
+    const cfg = readConfig();
+    return cfg.idleClip ? cfg.idleClip.length : 1;
+  },
+  onTick: onPreviewTime,
+});
+
+function setMode(mode) {
+  const isCraftpix = mode === 'craftpix';
+  document.getElementById('tab-craftpix').classList.toggle('active', isCraftpix);
+  document.getElementById('tab-template').classList.toggle('active', !isCraftpix);
+  document.getElementById('mode-craftpix').style.display = isCraftpix ? 'block' : 'none';
+  document.getElementById('mode-template').style.display = isCraftpix ? 'none' : 'block';
+  document.getElementById('preview-block').style.display = isCraftpix && state.rig ? 'block' : 'none';
+  document.getElementById('canvases').style.display = isCraftpix ? 'block' : 'none';
+  document.getElementById('tpl-preview-block').style.display = !isCraftpix && window.tplState && window.tplState.loaded ? 'block' : 'none';
+  document.getElementById('tpl-canvases').style.display = !isCraftpix ? 'block' : 'none';
+}
+document.getElementById('tab-craftpix').addEventListener('click', () => setMode('craftpix'));
+document.getElementById('tab-template').addEventListener('click', () => setMode('template'));

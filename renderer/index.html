@@ -49,6 +49,7 @@
     cursor: pointer;
   }
   button.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  button.icon { padding: 8px 10px; }
   button:disabled { opacity: .4; cursor: default; }
   label { display: block; margin: 8px 0 4px; color: var(--muted); }
   select, input[type=text], input[type=number] {
@@ -77,8 +78,8 @@
   .banner.ok { background: rgba(76,175,125,.15); color: var(--ok); border: 1px solid rgba(76,175,125,.4); }
   .banner.warn { background: rgba(224,168,50,.15); color: var(--warn); border: 1px solid rgba(224,168,50,.4); }
   .banner.err { background: rgba(224,85,79,.15); color: var(--err); border: 1px solid rgba(224,85,79,.4); }
-  #canvases { display: flex; flex-direction: column; gap: 20px; }
-  .canvas-block canvas {
+  #canvases, #tpl-canvases { display: flex; flex-direction: column; gap: 20px; }
+  .canvas-block canvas, .checker canvas {
     background:
       linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
       linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
@@ -92,96 +93,242 @@
   .canvas-block h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); }
   ul.log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   ul.log li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-  #preview-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-  #preview-controls input[type=range] { flex: 1; }
+  .preview-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .preview-controls input[type=range] { flex: 1; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
   .checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
   .checkbox-row input { width: auto; }
+
+  #mode-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+  #mode-tabs button { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+  #mode-tabs button.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+  #tpl-bone-list { display: flex; flex-direction: column; gap: 4px; }
+  .bone-row {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; cursor: pointer;
+  }
+  .bone-row.selected { border-color: var(--accent); background: #232a3d; }
+  .bone-row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .bone-row .bone-name { flex: 1; }
+  .bone-row .part-name { color: var(--muted); font-size: 11px; }
+  #tpl-part-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  #tpl-part-list .part-chip {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; cursor: grab; font-size: 12px;
+  }
+  #tpl-part-list .part-chip.used { opacity: .4; }
 </style>
 </head>
 <body>
   <div id="sidebar">
     <h1>Isometric Character Studio</h1>
 
-    <div class="card">
-      <button id="btn-pick-pack">1. Selecionar pasta do personagem</button>
-      <div id="pack-info" style="margin-top:8px; color: var(--muted);"></div>
+    <div id="mode-tabs">
+      <button id="tab-craftpix" class="active">Importar Craftpix</button>
+      <button id="tab-template">Personagem Template</button>
     </div>
 
-    <div id="config-section" style="display:none">
-      <div id="profile-banner"></div>
-      <div id="rig-banner"></div>
-
-      <h2>Mapeamento de animacoes (clips reais do Unity)</h2>
-      <label>Idle (obrigatoria)</label>
-      <select id="sel-anim-idle"></select>
-      <label>Walk (opcional)</label>
-      <select id="sel-anim-walk"><option value="">(nenhuma)</option></select>
-
-      <label class="checkbox-row">
-        <input type="checkbox" id="chk-has-north" />
-        Pacote tem view de costas (NORTH) separada
-      </label>
-      <select id="sel-anim-north" disabled><option value="">(usa a mesma pose de EAST)</option></select>
-
-      <h2>Formato de saida</h2>
-      <div class="row">
-        <div>
-          <label>Tamanho</label>
-          <select id="sel-size">
-            <option value="1x1">1x1 (256x448)</option>
-            <option value="2x2" selected>2x2 (512x896)</option>
-            <option value="3x3">3x3 (768x1344)</option>
-          </select>
-        </div>
-        <div>
-          <label>Frames idle</label>
-          <input type="number" id="num-frames-idle" value="4" min="1" max="8" />
-        </div>
-        <div>
-          <label>Frames walk</label>
-          <input type="number" id="num-frames-walk" value="4" min="3" max="8" />
-        </div>
-      </div>
-      <label>Escala do personagem dentro da celula (ajuste fino)</label>
-      <input type="number" id="num-scale" value="1" step="0.05" min="0.1" max="3" />
-      <div class="row">
-        <div>
-          <label>Deslocamento X (px)</label>
-          <input type="number" id="num-offset-x" value="0" step="5" />
-        </div>
-        <div>
-          <label>Deslocamento Y (px)</label>
-          <input type="number" id="num-offset-y" value="0" step="5" />
-        </div>
+    <!-- ===================== MODO 1: IMPORTAR CRAFTPIX ===================== -->
+    <div id="mode-craftpix">
+      <div class="card">
+        <button id="btn-pick-pack">1. Selecionar pasta do personagem</button>
+        <div id="pack-info" style="margin-top:8px; color: var(--muted);"></div>
       </div>
 
-      <label>Nome do personagem (pasta de saida)</label>
-      <input type="text" id="txt-character-name" />
+      <div id="config-section" style="display:none">
+        <div id="profile-banner"></div>
+        <div id="rig-banner"></div>
 
-      <div class="row" style="margin-top:12px;">
-        <button id="btn-preview" class="secondary">Atualizar preview</button>
-        <button id="btn-bake">Bake -&gt; idle.webp / walk.webp</button>
+        <h2>Mapeamento de animacoes (clips reais do Unity)</h2>
+        <label>Idle (obrigatoria)</label>
+        <select id="sel-anim-idle"></select>
+        <label>Walk (opcional)</label>
+        <select id="sel-anim-walk"><option value="">(nenhuma)</option></select>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="chk-has-north" />
+          Pacote tem view de costas (NORTH) separada
+        </label>
+        <select id="sel-anim-north" disabled><option value="">(usa a mesma pose de EAST)</option></select>
+
+        <h2>Formato de saida</h2>
+        <div class="row">
+          <div>
+            <label>Tamanho</label>
+            <select id="sel-size">
+              <option value="1x1">1x1 (256x448)</option>
+              <option value="2x2" selected>2x2 (512x896)</option>
+              <option value="3x3">3x3 (768x1344)</option>
+            </select>
+          </div>
+          <div>
+            <label>Frames idle</label>
+            <input type="number" id="num-frames-idle" value="4" min="1" max="8" />
+          </div>
+          <div>
+            <label>Frames walk</label>
+            <input type="number" id="num-frames-walk" value="4" min="3" max="8" />
+          </div>
+        </div>
+        <label>Escala do personagem dentro da celula (ajuste fino)</label>
+        <input type="number" id="num-scale" value="1" step="0.05" min="0.1" max="3" />
+        <div class="row">
+          <div>
+            <label>Deslocamento X (px)</label>
+            <input type="number" id="num-offset-x" value="0" step="5" />
+          </div>
+          <div>
+            <label>Deslocamento Y (px)</label>
+            <input type="number" id="num-offset-y" value="0" step="5" />
+          </div>
+        </div>
+
+        <label>Nome do personagem (pasta de saida)</label>
+        <input type="text" id="txt-character-name" />
+
+        <div class="row" style="margin-top:12px;">
+          <button id="btn-preview" class="secondary">Atualizar preview</button>
+          <button id="btn-bake">Bake -&gt; idle.webp / walk.webp</button>
+        </div>
+
+        <h2>Log</h2>
+        <ul class="log" id="log"></ul>
+      </div>
+    </div>
+
+    <!-- ===================== MODO 2: PERSONAGEM TEMPLATE ===================== -->
+    <div id="mode-template" style="display:none">
+      <div class="card">
+        <button id="tpl-btn-pick">1. Selecionar pasta de SVGs do personagem</button>
+        <div id="tpl-pack-info" style="margin-top:8px; color: var(--muted);"></div>
+        <div id="tpl-part-list"></div>
       </div>
 
-      <h2>Log</h2>
-      <ul class="log" id="log"></ul>
+      <div id="tpl-config-section" style="display:none">
+        <div id="tpl-binding-banner"></div>
+
+        <h2>Ossos do rig (clique para selecionar, depois escolha o arquivo)</h2>
+        <div id="tpl-bone-list"></div>
+
+        <h2>Peca selecionada</h2>
+        <div id="tpl-selected-bone-name" style="color:var(--muted); margin-bottom:6px;">(nenhum osso selecionado)</div>
+        <label>Arquivo SVG</label>
+        <select id="tpl-sel-file"><option value="">(nenhum)</option></select>
+        <div class="row">
+          <div>
+            <label>Pivo X (0-1)</label>
+            <input type="number" id="tpl-pivot-x" value="0.5" step="0.05" min="0" max="1" />
+          </div>
+          <div>
+            <label>Pivo Y (0-1)</label>
+            <input type="number" id="tpl-pivot-y" value="0.5" step="0.05" min="0" max="1" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Offset X (px)</label>
+            <input type="number" id="tpl-offset-x" value="0" step="1" />
+          </div>
+          <div>
+            <label>Offset Y (px)</label>
+            <input type="number" id="tpl-offset-y" value="0" step="1" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Escala da peca</label>
+            <input type="number" id="tpl-part-scale" value="1" step="0.05" min="0.05" max="5" />
+          </div>
+          <div>
+            <label>Rotacao (graus)</label>
+            <input type="number" id="tpl-rotation" value="0" step="1" />
+          </div>
+        </div>
+        <div class="checkbox-row" style="color:var(--muted); font-size:11px;">
+          Dica: arraste a peca direto no preview pra ajustar o offset.
+        </div>
+
+        <h2>Formato de saida</h2>
+        <div class="row">
+          <div>
+            <label>Tamanho</label>
+            <select id="tpl-sel-size">
+              <option value="1x1">1x1 (256x448)</option>
+              <option value="2x2" selected>2x2 (512x896)</option>
+              <option value="3x3">3x3 (768x1344)</option>
+            </select>
+          </div>
+          <div>
+            <label>Frames idle</label>
+            <input type="number" id="tpl-num-frames-idle" value="4" min="1" max="8" />
+          </div>
+          <div>
+            <label>Frames walk</label>
+            <input type="number" id="tpl-num-frames-walk" value="4" min="3" max="8" />
+          </div>
+        </div>
+        <label>Escala do personagem na celula</label>
+        <input type="number" id="tpl-num-scale" value="1" step="0.05" min="0.1" max="3" />
+        <div class="row">
+          <div>
+            <label>Deslocamento X (px)</label>
+            <input type="number" id="tpl-num-offset-x" value="0" step="5" />
+          </div>
+          <div>
+            <label>Deslocamento Y (px)</label>
+            <input type="number" id="tpl-num-offset-y" value="0" step="5" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button id="tpl-btn-save-binding" class="secondary">Salvar binding.json</button>
+          <button id="tpl-btn-bake">Bake -&gt; idle.webp / walk.webp</button>
+        </div>
+
+        <h2>Log</h2>
+        <ul class="log" id="tpl-log"></ul>
+      </div>
     </div>
   </div>
 
   <div id="main">
+    <!-- preview do modo Craftpix -->
     <div id="preview-block" class="card" style="display:none">
-      <h3 style="margin-top:0">Preview (pose unica, para conferir antes do bake)</h3>
+      <h3 style="margin-top:0">Preview (para conferir antes do bake)</h3>
       <canvas id="preview-canvas" width="512" height="896"></canvas>
-      <div id="preview-controls">
+      <div class="preview-controls">
+        <button id="preview-btn-play" class="secondary icon">&#9654; Play</button>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-loop" checked /> Loop</label>
         <span>t</span>
         <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
         <span id="preview-time-label">0.00s</span>
       </div>
     </div>
     <div id="canvases"></div>
+
+    <!-- preview do modo Template -->
+    <div id="tpl-preview-block" class="card" style="display:none">
+      <h3 style="margin-top:0">Preview (arraste a peca selecionada pra ajustar a posicao)</h3>
+      <canvas id="tpl-preview-canvas" width="512" height="896"></canvas>
+      <div class="preview-controls">
+        <select id="tpl-sel-anim" style="max-width:120px;">
+          <option value="idle">idle</option>
+          <option value="walk">walk</option>
+        </select>
+        <button id="tpl-preview-btn-play" class="secondary icon">&#9654; Play</button>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="tpl-preview-chk-loop" checked /> Loop</label>
+        <span>t</span>
+        <input type="range" id="tpl-preview-time" min="0" max="1" step="0.01" value="0" />
+        <span id="tpl-preview-time-label">0.00s</span>
+      </div>
+    </div>
+    <div id="tpl-canvases"></div>
   </div>
 
+  <script src="playback.js"></script>
   <script src="app.js"></script>
+  <script src="template-mode.js"></script>
 </body>
 </html>

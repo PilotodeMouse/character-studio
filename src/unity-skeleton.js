@@ -7,31 +7,13 @@
 // sair de cabeca pra baixo ou espelhado ao testar com arte real, e so
 // inverter aqui -- e o unico ponto sensivel a convencao do projeto inteiro.
 const { sampleClip } = require('./unity-clip-sampler');
+const { identityTransform, combine } = require('./pose-math');
 
 const CONVENTION = { flipY: true, invertAngle: true };
 
 function quatToAngleDeg(q) {
   // quaternion puro em Z (x=0,y=0): angulo = 2*atan2(z,w), em radianos.
   return (2 * Math.atan2(q.z, q.w) * 180) / Math.PI;
-}
-
-function identityTransform() {
-  return { x: 0, y: 0, angle: 0, scaleX: 1, scaleY: 1 };
-}
-
-function combine(parent, local) {
-  const pr = (parent.angle * Math.PI) / 180;
-  const cos = Math.cos(pr);
-  const sin = Math.sin(pr);
-  const sx = local.x * parent.scaleX;
-  const sy = local.y * parent.scaleY;
-  return {
-    x: parent.x + (sx * cos - sy * sin),
-    y: parent.y + (sx * sin + sy * cos),
-    angle: parent.angle + local.angle,
-    scaleX: parent.scaleX * local.scaleX,
-    scaleY: parent.scaleY * local.scaleY,
-  };
 }
 
 // Retorna o transform local (em pixels/graus) de um osso no tempo t: usa a
