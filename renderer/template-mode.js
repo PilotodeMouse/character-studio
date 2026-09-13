@@ -206,33 +206,82 @@ function tplTick() {
     }
   }
   ctx.restore();
+
+  tplState.lastPose = pose;
+  tplState.lastOrigin = origin;
+  tplState.lastCfg = cfg;
+}
+
+// Acha em qual peca (osso) um ponto do canvas cai, testando de frente pra
+// tras (o pose ja vem ordenado por zIndex, entao percorremos ao contrario).
+// O ponto e transformado pro espaco local de cada peca (desfazendo
+// translacao+rotacao) pra testar contra o retangulo que o drawImage usa.
+function hitTestBone(xLocal, yLocal, pose, origin) {
+  for (let i = pose.length - 1; i >= 0; i--) {
+    const item = pose[i];
+    const size = tplState.sizes.get(item.part.file);
+    if (!size) continue;
+    const w = size.width * item.part.scale;
+    const h = size.height * item.part.scale;
+    const px = item.world.x + item.part.offsetX + origin.x;
+    const py = -(item.world.y + item.part.offsetY) + origin.y;
+    const angleRad = (-(item.world.angle + item.part.rotationOffset) * Math.PI) / 180;
+    const cos = Math.cos(-angleRad);
+    const sin = Math.sin(-angleRad);
+    const dx = xLocal - px;
+    const dy = yLocal - py;
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+    const offsetX = -item.part.pivotX * w;
+    const offsetY = -item.part.pivotY * h;
+    if (localX >= offsetX && localX <= offsetX + w && localY >= offsetY && localY <= offsetY + h) {
+      return item.boneName;
+    }
+  }
+  return null;
+}
+
+function canvasEventToLocal(e) {
+  const canvas = document.getElementById('tpl-preview-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const pxScale = canvas.width / rect.width;
+  const mx = (e.clientX - rect.left) * pxScale;
+  const my = (e.clientY - rect.top) * pxScale;
+  const cfg = tplState.lastCfg || { scale: 1 };
+  const origin = tplState.lastOrigin || { x: canvas.width / 2, y: canvas.height * 0.85 };
+  return {
+    x: origin.x + (mx - origin.x) / cfg.scale,
+    y: origin.y + (my - origin.y) / cfg.scale,
+  };
 }
 
 function onCanvasMouseDown(e) {
-  if (!tplState.selectedBone) return;
+  if (!tplState.lastPose) return;
+  const { x, y } = canvasEventToLocal(e);
+  const hitBone = hitTestBone(x, y, tplState.lastPose, tplState.lastOrigin);
+  if (hitBone) {
+    selectBone(hitBone);
+  } else if (!tplState.selectedBone) {
+    return;
+  }
+
   const part = tplState.binding.parts[tplState.selectedBone];
   if (!part) return;
-  const canvas = document.getElementById('tpl-preview-canvas');
-  const rect = canvas.getBoundingClientRect();
-  const scale = canvas.width / rect.width;
   tplState.drag = {
-    startX: (e.clientX - rect.left) * scale,
-    startY: (e.clientY - rect.top) * scale,
+    startX: x,
+    startY: y,
     startOffsetX: part.offsetX,
     startOffsetY: part.offsetY,
   };
+  document.getElementById('tpl-preview-canvas').classList.add('dragging');
+  tplTick();
 }
 
 function onCanvasMouseMove(e) {
   if (!tplState.drag) return;
-  const canvas = document.getElementById('tpl-preview-canvas');
-  const rect = canvas.getBoundingClientRect();
-  const scale = canvas.width / rect.width;
-  const cfg = readTplConfig();
-  const x = (e.clientX - rect.left) * scale;
-  const y = (e.clientY - rect.top) * scale;
-  const dx = (x - tplState.drag.startX) / cfg.scale;
-  const dy = (y - tplState.drag.startY) / cfg.scale;
+  const { x, y } = canvasEventToLocal(e);
+  const dx = x - tplState.drag.startX;
+  const dy = y - tplState.drag.startY;
 
   const part = tplState.binding.parts[tplState.selectedBone];
   part.offsetX = tplState.drag.startOffsetX + dx;
@@ -244,6 +293,7 @@ function onCanvasMouseMove(e) {
 
 function onCanvasMouseUp() {
   tplState.drag = null;
+  document.getElementById('tpl-preview-canvas').classList.remove('dragging');
 }
 
 function onTplSaveBinding() {
