@@ -352,12 +352,27 @@ function canvasEventToLocalCraftpix(e) {
   };
 }
 
+// Clique esquerdo NUNCA troca a camada ativa sozinho -- a camada escolhida
+// na lista (ou por clique direito) e soberana, senao arrastar uma peca fina
+// que fica embaixo de outra maior vira uma armadilha (clica pra arrastar A,
+// o hit-test acha B por cima, e o arrasto sai errado). So clique direito
+// re-seleciona pelo que esta sob o cursor.
 function onPreviewCanvasMouseDown(e) {
   if (!state.lastPose) return;
   const { x, y } = canvasEventToLocalCraftpix(e);
-  const hit = hitTestCraftpixPart(x, y, state.lastPose);
-  if (hit) selectPart(hit);
-  else if (!state.selectedBone) return;
+
+  if (e.button === 2) {
+    const hit = hitTestCraftpixPart(x, y, state.lastPose);
+    if (hit) selectPart(hit);
+    return;
+  }
+  if (e.button !== 0) return;
+
+  if (!state.selectedBone) {
+    const hit = hitTestCraftpixPart(x, y, state.lastPose);
+    if (!hit) return;
+    selectPart(hit);
+  }
 
   document.getElementById('preview-canvas').classList.add('dragging');
   state.drag = { startX: x, startY: y, start: { ...(state.partOffsets.get(state.selectedBone) || { dx: 0, dy: 0, dangle: 0 }) } };
@@ -530,6 +545,7 @@ document.getElementById('btn-reset-part-offset').addEventListener('click', () =>
 
 const previewCanvasEl = document.getElementById('preview-canvas');
 previewCanvasEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
+previewCanvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousemove', onPreviewCanvasMouseMove);
 window.addEventListener('mouseup', onPreviewCanvasMouseUp);
 

@@ -249,14 +249,24 @@ function canvasEventToLocal(e) {
   };
 }
 
+// Mesma regra do modo Craftpix: clique esquerdo arrasta o osso ja
+// selecionado sem trocar, clique direito e que escolhe pelo que esta sob o
+// cursor.
 function onCanvasMouseDown(e) {
   if (!tplState.lastPose) return;
   const { x, y } = canvasEventToLocal(e);
-  const hitBone = hitTestBone(x, y, tplState.lastPose, tplState.lastOrigin);
-  if (hitBone) {
-    selectBone(hitBone);
-  } else if (!tplState.selectedBone) {
+
+  if (e.button === 2) {
+    const hitBone = hitTestBone(x, y, tplState.lastPose, tplState.lastOrigin);
+    if (hitBone) selectBone(hitBone);
     return;
+  }
+  if (e.button !== 0) return;
+
+  if (!tplState.selectedBone) {
+    const hitBone = hitTestBone(x, y, tplState.lastPose, tplState.lastOrigin);
+    if (!hitBone) return;
+    selectBone(hitBone);
   }
 
   const part = tplState.binding.parts[tplState.selectedBone];
@@ -406,6 +416,7 @@ document.getElementById('tpl-btn-bake').addEventListener('click', onTplBake);
 
 const tplCanvasEl = document.getElementById('tpl-preview-canvas');
 tplCanvasEl.addEventListener('mousedown', onCanvasMouseDown);
+tplCanvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousemove', onCanvasMouseMove);
 window.addEventListener('mouseup', onCanvasMouseUp);
 
