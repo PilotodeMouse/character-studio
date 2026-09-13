@@ -79,7 +79,7 @@
   .banner.warn { background: rgba(224,168,50,.15); color: var(--warn); border: 1px solid rgba(224,168,50,.4); }
   .banner.err { background: rgba(224,85,79,.15); color: var(--err); border: 1px solid rgba(224,85,79,.4); }
   #canvases, #tpl-canvases { display: flex; flex-direction: column; gap: 20px; }
-  .canvas-block canvas, .checker canvas {
+  .canvas-block canvas, .checker canvas, #preview-canvas, #tpl-preview-canvas {
     background:
       linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
       linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
@@ -90,11 +90,26 @@
     image-rendering: pixelated;
     border: 1px solid var(--border);
   }
+  #preview-canvas.no-checker, #tpl-preview-canvas.no-checker { background: var(--panel); }
   .canvas-block h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); }
   ul.log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   ul.log li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-  .preview-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-  .preview-controls input[type=range] { flex: 1; }
+  .preview-wrap { position: relative; display: inline-block; max-width: 100%; }
+  .preview-wrap canvas { display: block; max-width: 100%; }
+  /* A "linha do chao" (groundLineY) e sempre 13/14 da altura da celula, em
+     qualquer tamanho de saida (1x1/2x2/3x3) -- ver CELL_BY_SIZE em
+     src/vtt-standards.js. Ancorar a timeline ai, em vez de embaixo do canvas
+     inteiro, deixa ela colada nos pes do personagem. */
+  .preview-timeline {
+    position: absolute; left: 6px; right: 6px;
+    top: calc(100% * 13 / 14);
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(10,11,13,.82);
+    padding: 5px 8px; border-radius: 6px;
+    font-size: 11px;
+  }
+  .preview-timeline input[type=range] { flex: 1; }
+  .preview-toolbar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
   .checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
   .checkbox-row input { width: auto; }
@@ -126,15 +141,13 @@
   .layer-row {
     display: flex; align-items: center; gap: 6px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    padding: 5px 7px; cursor: pointer; font-size: 12px;
+    padding: 5px 7px; cursor: grab; font-size: 12px;
   }
   .layer-row.selected { border-color: var(--accent); background: #232a3d; }
-  .layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .layer-row .layer-btn {
-    background: transparent; border: 1px solid var(--border); color: var(--muted);
-    border-radius: 4px; padding: 1px 6px; font-size: 11px; line-height: 1.4;
-  }
-  .layer-row .layer-btn:hover { color: var(--text); }
+  .layer-row.dragging { opacity: .4; }
+  .layer-row.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+  .layer-row .layer-handle { color: var(--muted); }
+  .layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   #speed-row { display: flex; align-items: center; gap: 6px; }
   #speed-row select { width: auto; }
 </style>
@@ -206,7 +219,7 @@
         <label>Nome do personagem (pasta de saida)</label>
         <input type="text" id="txt-character-name" />
 
-        <h2>Camadas (clique pra selecionar, ↑/↓ reordena)</h2>
+        <h2>Camadas (clique pra selecionar, arraste pra reordenar)</h2>
         <div id="layers-list"></div>
 
         <h2>Ajuste manual por peca (nao mexe na animacao, so corrige)</h2>
@@ -349,8 +362,15 @@
     <!-- preview do modo Craftpix -->
     <div id="preview-block" class="card" style="display:none">
       <h3 style="margin-top:0">Preview (para conferir antes do bake)</h3>
-      <canvas id="preview-canvas" width="512" height="896"></canvas>
-      <div class="preview-controls">
+      <div class="preview-wrap">
+        <canvas id="preview-canvas" width="512" height="896"></canvas>
+        <div class="preview-timeline">
+          <span>t</span>
+          <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
+          <span id="preview-time-label">0.00s</span>
+        </div>
+      </div>
+      <div class="preview-toolbar">
         <button id="preview-btn-play" class="secondary icon">&#9654; Play</button>
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-loop" checked /> Loop</label>
         <select id="preview-sel-speed">
@@ -359,9 +379,7 @@
           <option value="0.25" selected>0.25x</option>
           <option value="0.1">0.1x</option>
         </select>
-        <span>t</span>
-        <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
-        <span id="preview-time-label">0.00s</span>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-checker" checked /> Fundo quadriculado</label>
       </div>
     </div>
     <div id="canvases"></div>
@@ -369,8 +387,15 @@
     <!-- preview do modo Template -->
     <div id="tpl-preview-block" class="card" style="display:none">
       <h3 style="margin-top:0">Preview (arraste a peca selecionada pra ajustar a posicao)</h3>
-      <canvas id="tpl-preview-canvas" width="512" height="896"></canvas>
-      <div class="preview-controls">
+      <div class="preview-wrap">
+        <canvas id="tpl-preview-canvas" width="512" height="896"></canvas>
+        <div class="preview-timeline">
+          <span>t</span>
+          <input type="range" id="tpl-preview-time" min="0" max="1" step="0.01" value="0" />
+          <span id="tpl-preview-time-label">0.00s</span>
+        </div>
+      </div>
+      <div class="preview-toolbar">
         <select id="tpl-sel-anim" style="max-width:120px;">
           <option value="idle">idle</option>
           <option value="walk">walk</option>
@@ -383,9 +408,7 @@
           <option value="0.25" selected>0.25x</option>
           <option value="0.1">0.1x</option>
         </select>
-        <span>t</span>
-        <input type="range" id="tpl-preview-time" min="0" max="1" step="0.01" value="0" />
-        <span id="tpl-preview-time-label">0.00s</span>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="tpl-preview-chk-checker" checked /> Fundo quadriculado</label>
       </div>
     </div>
     <div id="tpl-canvases"></div>

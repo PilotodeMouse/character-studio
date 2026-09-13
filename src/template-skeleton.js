@@ -43,7 +43,7 @@ function computePose(archetype, template, t, binding) {
 }
 
 // images: Map<fileName, HTMLImageElement>. svgSizes: Map<fileName, {width,height}>.
-function drawPose(ctx, pose, images, svgSizes, origin, scale = 1) {
+function drawPose(ctx, pose, images, svgSizes, origin, scale = 1, selectedBoneName = null) {
   for (const item of pose) {
     const img = images.get(item.part.file);
     const size = svgSizes.get(item.part.file);
@@ -62,6 +62,11 @@ function drawPose(ctx, pose, images, svgSizes, origin, scale = 1) {
     const offsetX = -item.part.pivotX * w;
     const offsetY = -item.part.pivotY * h;
     ctx.drawImage(img, offsetX, offsetY, w, h);
+    if (item.boneName === selectedBoneName) {
+      ctx.strokeStyle = '#ff3b30';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(offsetX, offsetY, w, h);
+    }
     ctx.restore();
   }
 }

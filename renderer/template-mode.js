@@ -181,33 +181,24 @@ function tplTick() {
   const t = Math.min(parseFloat(slider.value) * 1000, template.length);
   document.getElementById('tpl-preview-time-label').textContent = `${(t / 1000).toFixed(2)}s / ${(template.length / 1000).toFixed(2)}s`;
 
+  // Mesmas dimensoes e mesma linha do chao (groundLineY) do bake de verdade
+  // (a rotina de onTplBake abaixo), pra o preview corresponder exatamente ao
+  // .webp gerado -- antes usava canvas.height*0.85 como aproximacao.
   const cfg = readTplConfig();
+  const cell = cellSpecFor(cfg.size);
   const canvas = document.getElementById('tpl-preview-canvas');
+  if (canvas.width !== cell.w) canvas.width = cell.w;
+  if (canvas.height !== cell.h) canvas.height = cell.h;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   const pose = computePose(archetype, template, t, tplState.binding);
-  const origin = { x: canvas.width / 2 + cfg.offsetX, y: canvas.height * 0.85 + cfg.offsetY };
+  const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
   ctx.save();
   ctx.translate(origin.x, origin.y);
   ctx.scale(cfg.scale, cfg.scale);
   ctx.translate(-origin.x, -origin.y);
-  drawPose(ctx, pose, tplState.images, tplState.sizes, origin, 1);
-
-  // marca o osso selecionado com um circulo, pra saber onde clicar/arrastar
-  if (tplState.selectedBone) {
-    const item = pose.find((p) => p.boneName === tplState.selectedBone);
-    const boneWorld = item ? item.world : null;
-    if (boneWorld) {
-      const px = boneWorld.x + origin.x;
-      const py = -boneWorld.y + origin.y;
-      ctx.strokeStyle = '#5b8cff';
-      ctx.lineWidth = 2 / cfg.scale;
-      ctx.beginPath();
-      ctx.arc(px, py, 6 / cfg.scale, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
+  drawPose(ctx, pose, tplState.images, tplState.sizes, origin, 1, tplState.selectedBone);
   ctx.restore();
 
   tplState.lastPose = pose;
@@ -402,10 +393,14 @@ document.getElementById('tpl-offset-y').addEventListener('input', applyFieldsToS
 document.getElementById('tpl-part-scale').addEventListener('input', applyFieldsToSelectedPart);
 document.getElementById('tpl-rotation').addEventListener('input', applyFieldsToSelectedPart);
 document.getElementById('tpl-sel-anim').addEventListener('change', tplTick);
+document.getElementById('tpl-sel-size').addEventListener('change', tplTick);
 document.getElementById('tpl-preview-time').addEventListener('input', tplTick);
 document.getElementById('tpl-num-scale').addEventListener('input', tplTick);
 document.getElementById('tpl-num-offset-x').addEventListener('input', tplTick);
 document.getElementById('tpl-num-offset-y').addEventListener('input', tplTick);
+document.getElementById('tpl-preview-chk-checker').addEventListener('change', (e) => {
+  document.getElementById('tpl-preview-canvas').classList.toggle('no-checker', !e.target.checked);
+});
 document.getElementById('tpl-btn-save-binding').addEventListener('click', onTplSaveBinding);
 document.getElementById('tpl-btn-bake').addEventListener('click', onTplBake);
 

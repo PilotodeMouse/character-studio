@@ -16,7 +16,7 @@ const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT } = require('../src/vtt-standards');
+const { EXPORT, cellSpecFor } = require('../src/vtt-standards');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -198,28 +198,24 @@ function onPreviewTime() {
   const clampedT = Math.min(t, cfg.idleClip.length);
   document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${cfg.idleClip.length.toFixed(2)}s`;
 
+  // O canvas de preview usa exatamente as mesmas dimensoes e a mesma linha
+  // do chao (groundLineY) que o bake de verdade (src/baker.js), assim o que
+  // se ve aqui e o que sai no .webp -- antes o preview usava canvas.height*0.85
+  // como aproximacao e ficava um pouco fora do lugar em relacao ao bake real.
+  const cell = cellSpecFor(cfg.size);
   const canvas = document.getElementById('preview-canvas');
+  if (canvas.width !== cell.w) canvas.width = cell.w;
+  if (canvas.height !== cell.h) canvas.height = cell.h;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName);
   const pose = applyManualOverrides(rawPose, state.partOffsets);
-  const origin = { x: canvas.width / 2 + cfg.offsetX, y: canvas.height * 0.85 + cfg.offsetY };
+  const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
   ctx.save();
   ctx.translate(origin.x, origin.y);
   ctx.scale(cfg.scale, cfg.scale);
   ctx.translate(-origin.x, -origin.y);
-  drawPose(ctx, pose, state.images, state.pivots, origin, 1);
-
-  if (state.selectedBone) {
-    const item = pose.find((p) => p.boneName === state.selectedBone);
-    if (item) {
-      ctx.strokeStyle = '#5b8cff';
-      ctx.lineWidth = 2 / cfg.scale;
-      ctx.beginPath();
-      ctx.arc(item.world.x + origin.x, -item.world.y + origin.y, 6 / cfg.scale, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
+  drawPose(ctx, pose, state.images, state.pivots, origin, 1, state.selectedBone);
   ctx.restore();
 
   state.lastPose = pose;
@@ -268,28 +264,48 @@ function renderLayersList() {
     const layer = layers[i];
     const row = document.createElement('div');
     row.className = 'layer-row' + (state.selectedBone === layer.boneName ? ' selected' : '');
-    row.innerHTML = `<span class="layer-name">${layer.boneName}</span><button class="layer-btn" data-dir="up">&#9650;</button><button class="layer-btn" data-dir="down">&#9660;</button>`;
+    row.draggable = true;
+    row.innerHTML = `<span class="layer-handle">&#8942;&#8942;</span><span class="layer-name">${layer.boneName}</span>`;
     row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
-    row.querySelectorAll('.layer-btn').forEach((btn) => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        moveLayer(layer.boneName, btn.dataset.dir);
-      });
+    row.addEventListener('dragstart', (ev) => {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', layer.boneName);
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      row.classList.remove('drag-over');
+      const draggedBone = ev.dataTransfer.getData('text/plain');
+      if (!draggedBone || draggedBone === layer.boneName) return;
+      const rect = row.getBoundingClientRect();
+      const after = ev.clientY - rect.top > rect.height / 2;
+      reorderLayers(draggedBone, layer.boneName, after);
     });
     el.appendChild(row);
   }
 }
 
-function moveLayer(boneName, dir) {
-  const layers = currentLayers();
-  const idx = layers.findIndex((l) => l.boneName === boneName);
-  const swapIdx = dir === 'up' ? idx + 1 : idx - 1;
-  if (swapIdx < 0 || swapIdx >= layers.length) return;
-  // reatribui zIndex inteiro sequencial pra todo mundo (evita empates) e
-  // troca os dois que o usuario pediu pra trocar.
-  const order = layers.map((l) => l.boneName);
-  [order[idx], order[swapIdx]] = [order[swapIdx], order[idx]];
-  order.forEach((name, i) => {
+// draggedBone e solto sobre targetBone; after decide se ele entra antes ou
+// depois do alvo na lista (exibida de frente/topo pra fundo). Reatribui
+// zIndex inteiro sequencial pra todo mundo, igual o antigo botao ^/v fazia.
+function reorderLayers(draggedBone, targetBone, after) {
+  const layers = currentLayers(); // ordem ascendente de z (fundo -> frente)
+  const displayed = [...layers].reverse().map((l) => l.boneName); // frente -> fundo, como na lista
+  const fromIdx = displayed.indexOf(draggedBone);
+  if (fromIdx === -1) return;
+  displayed.splice(fromIdx, 1);
+  let toIdx = displayed.indexOf(targetBone);
+  if (toIdx === -1) return;
+  if (after) toIdx += 1;
+  displayed.splice(toIdx, 0, draggedBone);
+  const backToFront = [...displayed].reverse();
+  backToFront.forEach((name, i) => {
     const existing = state.partOffsets.get(name) || {};
     state.partOffsets.set(name, { ...existing, zIndex: i });
   });
@@ -489,12 +505,16 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
+document.getElementById('sel-size').addEventListener('change', onPreviewTime);
 document.getElementById('preview-time').addEventListener('input', onPreviewTime);
 document.getElementById('num-scale').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-x').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
+document.getElementById('preview-chk-checker').addEventListener('change', (e) => {
+  document.getElementById('preview-canvas').classList.toggle('no-checker', !e.target.checked);
+});
 
 document.getElementById('part-offset-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-y').addEventListener('input', applyOffsetFieldsToSelected);

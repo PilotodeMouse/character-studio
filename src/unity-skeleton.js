@@ -68,7 +68,7 @@ function computePose(rig, clip, t, zIndexByName) {
 // (do scml-parser, que tem exatamente esses valores por arquivo). Quando o
 // item tem um pivotOverride (de applyManualOverrides), ele substitui so o
 // pivotX/pivotY do arquivo, mantendo width/height reais da imagem.
-function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
+function drawPose(ctx, pose, images, pivots, origin, scale = 1, selectedBoneName = null) {
   for (const item of pose) {
     if (item.sprite.alpha <= 0) continue;
     const img = images.get(item.sprite.pngName);
@@ -94,6 +94,15 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
     const offsetX = -pivot.pivotX * w;
     const offsetY = -pivot.pivotY * h;
     ctx.drawImage(img, offsetX, offsetY, w, h);
+    if (item.boneName === selectedBoneName) {
+      // Contorno desenhado dentro do mesmo transform da imagem (mesma
+      // translacao/rotacao/escala/flip), entao fica pixel-perfect alinhado
+      // com a peca de verdade, em vez de replicar a matematica em outro lugar.
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#ff3b30';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(offsetX, offsetY, w, h);
+    }
     ctx.restore();
   }
 }
