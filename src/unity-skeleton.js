@@ -19,30 +19,74 @@ function quatToAngleDeg(q) {
 // Retorna o transform local (em pixels/graus) de um osso no tempo t: usa a
 // curva do clip quando existe, cai pra pose de bind (a Transform local do
 // proprio prefab) quando o osso nao e animado neste clip especifico.
-function localTransformAt(bone, sampledByPath, pixelsPerUnit) {
+//
+// partOffsets (opcional): o mesmo Map<boneName,{...}> dos ajustes manuais
+// (ver applyManualOverrides). Alem dos campos estaticos que ele ja carrega,
+// dampX/dampY/dampAngle (0-1) amortecem o deslocamento/rotacao ANIMADOS
+// desse osso -- puxam de volta em direcao a pose de bind naquele componente.
+// Precisa acontecer aqui, no espaco local de cada osso, porque o balanco de
+// um pai se propaga pros filhos pela composicao da hierarquia; aplicar isso
+// so depois, no mundo (como applyManualOverrides faz), nao teria como isolar
+// "o quanto desse osso especifico e animacao" de "o quanto veio herdado do pai".
+//
+// Importante: nesses rigs Craftpix, a maioria das PECAS com sprite (Head,
+// Body, bracos...) nao tem curva propria -- sao so um sprite preso na ponta
+// de um osso-junta sem arte que gira/desliza mais acima na hierarquia (ver
+// findAnimatedAncestorName). O amortecimento precisa ser configurado no
+// nome do osso que REALMENTE anima, nao no nome da peca visivel.
+function localTransformAt(bone, sampledByPath, pixelsPerUnit, partOffsets) {
   const sampled = sampledByPath.get(bone.path);
-  const pos = (sampled && sampled.position) || bone.localPos;
-  const rot = (sampled && sampled.rotation) || bone.localRot;
+  const sampledPos = sampled && sampled.position;
+  const sampledRot = sampled && sampled.rotation;
+  const bindX = bone.localPos.x * pixelsPerUnit;
+  const bindY = bone.localPos.y * pixelsPerUnit;
+  const bindAngle = quatToAngleDeg(bone.localRot);
+  let x = sampledPos ? sampledPos.x * pixelsPerUnit : bindX;
+  let y = sampledPos ? sampledPos.y * pixelsPerUnit : bindY;
+  let angle = sampledRot ? quatToAngleDeg(sampledRot) : bindAngle;
+  const damp = partOffsets && partOffsets.get(bone.name);
+  if (damp && damp.dampX) x = bindX + (x - bindX) * (1 - damp.dampX);
+  if (damp && damp.dampY) y = bindY + (y - bindY) * (1 - damp.dampY);
+  if (damp && damp.dampAngle) angle = bindAngle + (angle - bindAngle) * (1 - damp.dampAngle);
   return {
-    x: pos.x * pixelsPerUnit,
-    y: pos.y * pixelsPerUnit,
-    angle: quatToAngleDeg(rot),
+    x,
+    y,
+    angle,
     scaleX: bone.localScale.x,
     scaleY: bone.localScale.y,
   };
+}
+
+// Acha o ancestral mais proximo (incluindo o proprio osso) que de fato tem
+// curva de posicao ou rotacao neste clip especifico. Usado pra saber, quando
+// o usuario seleciona uma PECA (ex: "Head") pra amortecer o balanco, em qual
+// osso de verdade gravar o ajuste -- porque a peca em si costuma so herdar
+// posicao/rotacao de uma junta sem arte mais acima (comum nesses rigs
+// Craftpix: braco/cabeca sao um sprite preso na ponta de um osso que gira).
+function findAnimatedAncestorName(rig, clip, boneName) {
+  if (!clip) return boneName;
+  const isAnimated = (path) =>
+    clip.positionCurves.some((c) => c.path === path) || clip.rotationCurves.some((c) => c.path === path);
+  let bone = [...rig.bones.values()].find((b) => b.name === boneName);
+  while (bone) {
+    if (isAnimated(bone.path)) return bone.name;
+    bone = bone.parentTransformId ? rig.bones.get(bone.parentTransformId) : null;
+  }
+  return boneName;
 }
 
 // pose(t) -> array de { zIndex, boneName, world, sprite } ordenado por zIndex
 // zIndexByName (opcional): Map<nomeDaParte, z_index> vindo do .scml, usado
 // como override porque o m_SortingOrder do Unity vem zerado pra tudo nesses
 // pacotes (ver scml-zorder.js).
-function computePose(rig, clip, t, zIndexByName) {
+// partOffsets (opcional): ver comentario de localTransformAt acima.
+function computePose(rig, clip, t, zIndexByName, partOffsets) {
   const sampledByPath = clip ? sampleClip(clip, t) : new Map();
   const worldByTransformId = new Map();
 
   function visit(boneId, parentWorld) {
     const bone = rig.bones.get(boneId);
-    const local = localTransformAt(bone, sampledByPath, rig.pixelsPerUnit);
+    const local = localTransformAt(bone, sampledByPath, rig.pixelsPerUnit, partOffsets);
     const world = combine(parentWorld, local);
     worldByTransformId.set(boneId, world);
     for (const childId of bone.children) visit(childId, world);
@@ -136,4 +180,4 @@ function applyManualOverrides(pose, overrides) {
   return withOverrides;
 }
 
-module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg, applyManualOverrides };
+module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg, applyManualOverrides, findAnimatedAncestorName };

@@ -28,7 +28,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName), partOffsets);
+      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName, partOffsets), partOffsets);
 
       ctx.save();
       ctx.beginPath();

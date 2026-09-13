@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose, applyManualOverrides } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
@@ -208,7 +208,7 @@ function onPreviewTime() {
   if (canvas.height !== cell.h) canvas.height = cell.h;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName);
+  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName, state.partOffsets);
   const pose = applyManualOverrides(rawPose, state.partOffsets);
   const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
   ctx.save();
@@ -235,6 +235,26 @@ function selectPart(boneName) {
   const filePivot = bone && bone.sprite && state.pivots.get(bone.sprite.pngName);
   document.getElementById('part-pivot-x').value = o.pivotX !== undefined ? o.pivotX : filePivot ? filePivot.pivotX : 0;
   document.getElementById('part-pivot-y').value = o.pivotY !== undefined ? o.pivotY : filePivot ? filePivot.pivotY : 1;
+
+  // O amortecimento de balanco nao vive necessariamente na propria peca: a
+  // maioria das pecas com sprite so tem a pose de bind (nao anima sozinha),
+  // o movimento de verdade vem de um osso-junta sem arte mais acima na
+  // hierarquia (ver findAnimatedAncestorName). Resolve contra o clip de Idle
+  // -- e o unico que o preview deste modo toca -- e guarda o resultado em
+  // state.selectedDampBone pra applyOffsetFieldsToSelected gravar no lugar certo.
+  const cfg = readConfig();
+  const dampBone = boneName && cfg.idleClip ? findAnimatedAncestorName(state.rig, cfg.idleClip, boneName) : boneName;
+  state.selectedDampBone = dampBone;
+  const d = (dampBone && state.partOffsets.get(dampBone)) || {};
+  document.getElementById('part-damp-x').value = (d.dampX || 0) * 100;
+  document.getElementById('part-damp-y').value = (d.dampY || 0) * 100;
+  document.getElementById('part-damp-angle').value = (d.dampAngle || 0) * 100;
+  const hint = document.getElementById('part-damp-hint');
+  if (hint) {
+    hint.textContent = !boneName || dampBone === boneName
+      ? 'Reduz o deslocamento/rotacao ANIMADOS dessa peca -- 0% mantem fiel ao clip original, 100% trava nesse componente (para de balancar).'
+      : `Essa peca nao anima sozinha nesse clip -- o balanco vem do osso "${dampBone}" mais acima na hierarquia; o amortecimento abaixo age nele (afeta tambem outras pecas presas ao mesmo osso).`;
+  }
 
   renderLayersList();
 }
@@ -396,6 +416,10 @@ function onPreviewCanvasMouseUp() {
   document.getElementById('preview-canvas').classList.remove('dragging');
 }
 
+function clampPercent01(elId) {
+  return Math.min(1, Math.max(0, (parseFloat(document.getElementById(elId).value) || 0) / 100));
+}
+
 function applyOffsetFieldsToSelected() {
   if (!state.selectedBone) return;
   const existing = state.partOffsets.get(state.selectedBone) || {};
@@ -407,6 +431,19 @@ function applyOffsetFieldsToSelected() {
     pivotX: parseFloat(document.getElementById('part-pivot-x').value),
     pivotY: parseFloat(document.getElementById('part-pivot-y').value),
   });
+
+  // O amortecimento grava no osso que REALMENTE anima (state.selectedDampBone,
+  // resolvido em selectPart), que pode ser diferente da peca clicada -- ver
+  // comentario em findAnimatedAncestorName (unity-skeleton.js).
+  const dampBone = state.selectedDampBone || state.selectedBone;
+  const existingDamp = state.partOffsets.get(dampBone) || {};
+  state.partOffsets.set(dampBone, {
+    ...existingDamp,
+    dampX: clampPercent01('part-damp-x'),
+    dampY: clampPercent01('part-damp-y'),
+    dampAngle: clampPercent01('part-damp-angle'),
+  });
+
   onPreviewTime();
 }
 
@@ -536,9 +573,15 @@ document.getElementById('part-offset-y').addEventListener('input', applyOffsetFi
 document.getElementById('part-offset-angle').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-pivot-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-pivot-y').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-x').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-y').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-angle').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('btn-reset-part-offset').addEventListener('click', () => {
   if (!state.selectedBone) return;
   state.partOffsets.delete(state.selectedBone);
+  if (state.selectedDampBone && state.selectedDampBone !== state.selectedBone) {
+    state.partOffsets.delete(state.selectedDampBone);
+  }
   selectPart(state.selectedBone);
   onPreviewTime();
 });
