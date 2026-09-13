@@ -1,14 +1,16 @@
 // Monta o grid de spritesheet exigido pelo VTT (linhas = direcoes, colunas =
 // frames) a partir de um clip real extraido do .unitypackage, usando
 // unity-skeleton para amostrar cada pose.
-const { computePose, drawPose } = require('./unity-skeleton');
+const { computePose, drawPose, applyManualOverrides } = require('./unity-skeleton');
 const { cellSpecFor } = require('./vtt-standards');
 
 // rows: array de { row: 'north'|'east', clip, hasArt } na ordem em que devem
 // ser desenhadas. Quando hasArt=false (personagem sem view de costas, comum
 // nesses pacotes Craftpix de frente unica), a linha e preenchida com a
 // mesma pose de EAST e marcada como placeholder no retorno.
-function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 } }) {
+// partOffsets (opcional): Map<boneName,{dx,dy,dangle}> com correcoes manuais
+// do usuario, aplicadas por cima da pose real antes de desenhar.
+function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets }) {
   const cell = cellSpecFor(size);
   const canvas = createCanvas(cell.w * frameCount, cell.h * rows.length);
   const ctx = canvas.getContext('2d');
@@ -26,7 +28,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      const pose = computePose(rig, clip, t, zIndexByName);
+      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName), partOffsets);
 
       ctx.save();
       ctx.beginPath();

@@ -1,3 +1,6 @@
+// IIFE por ser um <script> classico compartilhando escopo global com
+// app.js/playback.js -- ver comentario identico no topo de app.js.
+(function () {
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
@@ -418,3 +421,4 @@ createPlayback({
   getMax: () => getTemplate(document.getElementById('tpl-sel-anim').value).length / 1000,
   onTick: tplTick,
 });
+})();

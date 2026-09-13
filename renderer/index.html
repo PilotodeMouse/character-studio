@@ -119,8 +119,8 @@
     padding: 4px 8px; cursor: grab; font-size: 12px;
   }
   #tpl-part-list .part-chip.used { opacity: .4; }
-  #tpl-preview-canvas { cursor: grab; }
-  #tpl-preview-canvas.dragging { cursor: grabbing; }
+  #tpl-preview-canvas, #preview-canvas { cursor: grab; }
+  #tpl-preview-canvas.dragging, #preview-canvas.dragging { cursor: grabbing; }
 </style>
 </head>
 <body>
@@ -189,6 +189,27 @@
 
         <label>Nome do personagem (pasta de saida)</label>
         <input type="text" id="txt-character-name" />
+
+        <h2>Ajuste manual por peca (nao mexe na animacao, so corrige)</h2>
+        <div style="color:var(--muted); font-size:11px; margin-bottom:6px;">
+          Clique numa peca no preview pra selecionar, arraste pra mover. O ajuste fica salvo por rig -- outros personagens da mesma serie herdam.
+        </div>
+        <div id="sel-part-name" style="color:var(--muted); margin-bottom:6px;">(nenhuma peca selecionada)</div>
+        <div class="row">
+          <div>
+            <label>Offset X (px)</label>
+            <input type="number" id="part-offset-x" value="0" step="1" />
+          </div>
+          <div>
+            <label>Offset Y (px)</label>
+            <input type="number" id="part-offset-y" value="0" step="1" />
+          </div>
+          <div>
+            <label>Rotacao (graus)</label>
+            <input type="number" id="part-offset-angle" value="0" step="1" />
+          </div>
+        </div>
+        <button id="btn-reset-part-offset" class="secondary" style="margin-top:6px;">Zerar ajuste desta peca</button>
 
         <div class="row" style="margin-top:12px;">
           <button id="btn-preview" class="secondary">Atualizar preview</button>

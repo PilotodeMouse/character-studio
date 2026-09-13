@@ -15,6 +15,13 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  // Encaminha console.log/warn/error da tela pro terminal -- facilita
+  // depurar sem precisar abrir o DevTools manualmente.
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const label = ['LOG', 'WARN', 'ERROR'][level] || 'LOG';
+    console.log(`[renderer:${label}] ${message} (${path.basename(sourceId)}:${line})`);
+  });
 }
 
 app.whenReady().then(() => {

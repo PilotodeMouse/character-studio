@@ -95,4 +95,26 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
   }
 }
 
-module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg };
+// Aplica correcoes manuais por osso (offsets do usuario, ajustados por
+// arrastar no preview) SEM tocar nos dados extraidos do Unity -- e so uma
+// camada por cima, opcional, guardada a parte no rig-profile. Chame depois
+// de computePose(), antes de drawPose().
+// overrides: Map<boneName, {dx,dy,dangle}>
+function applyManualOverrides(pose, overrides) {
+  if (!overrides || overrides.size === 0) return pose;
+  return pose.map((item) => {
+    const o = overrides.get(item.boneName);
+    if (!o) return item;
+    return {
+      ...item,
+      world: {
+        ...item.world,
+        x: item.world.x + (o.dx || 0),
+        y: item.world.y + (o.dy || 0),
+        angle: item.world.angle + (o.dangle || 0),
+      },
+    };
+  });
+}
+
+module.exports = { computePose, drawPose, CONVENTION, quatToAngleDeg, applyManualOverrides };

@@ -1,9 +1,14 @@
+// IIFE: cada <script> de renderer/ roda no MESMO escopo global (nao sao
+// modulos ES), entao sem isso "const ipcRenderer/fs/path" aqui colide com a
+// mesma declaracao em template-mode.js e quebra o parse dos dois arquivos
+// inteiros (SyntaxError silencioso -- nenhum botao funciona).
+(function () {
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
@@ -24,6 +29,12 @@ let state = {
   zIndexByName: new Map(),
   rigId: null,
   outputFolder: null,
+  partOffsets: new Map(), // boneName -> {dx,dy,dangle}, correcao manual do usuario
+  selectedBone: null,
+  lastPose: null,
+  lastOrigin: null,
+  lastCfg: null,
+  drag: null,
 };
 
 function log(msg, cls) {
@@ -137,6 +148,7 @@ function applyRigProfileIfKnown() {
     document.getElementById('num-offset-y').value = profile.offsetY || 0;
     document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
     document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
+    state.partOffsets = new Map(Object.entries(profile.partOffsets || {}));
   } else {
     banner(
       rigBanner,
@@ -188,14 +200,117 @@ function onPreviewTime() {
   const canvas = document.getElementById('preview-canvas');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const pose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName);
+  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName);
+  const pose = applyManualOverrides(rawPose, state.partOffsets);
   const origin = { x: canvas.width / 2 + cfg.offsetX, y: canvas.height * 0.85 + cfg.offsetY };
   ctx.save();
   ctx.translate(origin.x, origin.y);
   ctx.scale(cfg.scale, cfg.scale);
   ctx.translate(-origin.x, -origin.y);
   drawPose(ctx, pose, state.images, state.pivots, origin, 1);
+
+  if (state.selectedBone) {
+    const item = pose.find((p) => p.boneName === state.selectedBone);
+    if (item) {
+      ctx.strokeStyle = '#5b8cff';
+      ctx.lineWidth = 2 / cfg.scale;
+      ctx.beginPath();
+      ctx.arc(item.world.x + origin.x, -item.world.y + origin.y, 6 / cfg.scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   ctx.restore();
+
+  state.lastPose = pose;
+  state.lastOrigin = origin;
+  state.lastCfg = cfg;
+}
+
+function selectPart(boneName) {
+  state.selectedBone = boneName;
+  document.getElementById('sel-part-name').textContent = boneName || '(nenhuma peca selecionada)';
+  const o = state.partOffsets.get(boneName) || { dx: 0, dy: 0, dangle: 0 };
+  document.getElementById('part-offset-x').value = o.dx;
+  document.getElementById('part-offset-y').value = o.dy;
+  document.getElementById('part-offset-angle').value = o.dangle;
+}
+
+function hitTestCraftpixPart(xLocal, yLocal, pose) {
+  for (let i = pose.length - 1; i >= 0; i--) {
+    const item = pose[i];
+    const pivot = state.pivots.get(item.sprite.pngName);
+    if (!pivot || item.sprite.alpha <= 0) continue;
+    const w = pivot.width;
+    const h = pivot.height;
+    const px = item.world.x + state.lastOrigin.x;
+    const py = -item.world.y + state.lastOrigin.y;
+    const angleRad = (item.world.angle * Math.PI) / 180; // drawPose usa -angle; aqui desfazemos o -angle direto
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+    const dx = xLocal - px;
+    const dy = yLocal - py;
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+    const offsetX = -pivot.pivotX * w;
+    const offsetY = -pivot.pivotY * h;
+    if (localX >= offsetX && localX <= offsetX + w && localY >= offsetY && localY <= offsetY + h) {
+      return item.boneName;
+    }
+  }
+  return null;
+}
+
+function canvasEventToLocalCraftpix(e) {
+  const canvas = document.getElementById('preview-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const pxScale = canvas.width / rect.width;
+  const mx = (e.clientX - rect.left) * pxScale;
+  const my = (e.clientY - rect.top) * pxScale;
+  const cfg = state.lastCfg || { scale: 1 };
+  const origin = state.lastOrigin || { x: canvas.width / 2, y: canvas.height * 0.85 };
+  return {
+    x: origin.x + (mx - origin.x) / cfg.scale,
+    y: origin.y + (my - origin.y) / cfg.scale,
+  };
+}
+
+function onPreviewCanvasMouseDown(e) {
+  if (!state.lastPose) return;
+  const { x, y } = canvasEventToLocalCraftpix(e);
+  const hit = hitTestCraftpixPart(x, y, state.lastPose);
+  if (hit) selectPart(hit);
+  else if (!state.selectedBone) return;
+
+  document.getElementById('preview-canvas').classList.add('dragging');
+  state.drag = { startX: x, startY: y, start: { ...(state.partOffsets.get(state.selectedBone) || { dx: 0, dy: 0, dangle: 0 }) } };
+  onPreviewTime();
+}
+
+function onPreviewCanvasMouseMove(e) {
+  if (!state.drag) return;
+  const { x, y } = canvasEventToLocalCraftpix(e);
+  const dx = x - state.drag.startX;
+  const dy = y - state.drag.startY;
+  const o = { dx: state.drag.start.dx + dx, dy: state.drag.start.dy - dy, dangle: state.drag.start.dangle };
+  state.partOffsets.set(state.selectedBone, o);
+  document.getElementById('part-offset-x').value = o.dx.toFixed(1);
+  document.getElementById('part-offset-y').value = o.dy.toFixed(1);
+  onPreviewTime();
+}
+
+function onPreviewCanvasMouseUp() {
+  state.drag = null;
+  document.getElementById('preview-canvas').classList.remove('dragging');
+}
+
+function applyOffsetFieldsToSelected() {
+  if (!state.selectedBone) return;
+  state.partOffsets.set(state.selectedBone, {
+    dx: parseFloat(document.getElementById('part-offset-x').value) || 0,
+    dy: parseFloat(document.getElementById('part-offset-y').value) || 0,
+    dangle: parseFloat(document.getElementById('part-offset-angle').value) || 0,
+  });
+  onPreviewTime();
 }
 
 function renderCanvasBlock(container, title, canvas, warnings, errors) {
@@ -255,6 +370,7 @@ async function onBakeClick() {
       frameCount: job.frames,
       size: cfg.size,
       originOffset: { x: cfg.offsetX, y: cfg.offsetY },
+      partOffsets: state.partOffsets,
       createCanvas: (w, h) => {
         const c = document.createElement('canvas');
         c.width = w;
@@ -297,6 +413,7 @@ async function onBakeClick() {
     offsetX: cfg.offsetX,
     offsetY: cfg.offsetY,
     hasNorthView: cfg.hasNorthView,
+    partOffsets: Object.fromEntries(state.partOffsets),
   });
   log(`Preferencias salvas para o rig ${state.rigId.slice(0, 8)} -- outros personagens dessa serie vao herdar isso.`, 'ok');
 }
@@ -312,6 +429,21 @@ document.getElementById('num-offset-x').addEventListener('input', onPreviewTime)
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
+
+document.getElementById('part-offset-x').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-offset-y').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-offset-angle').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('btn-reset-part-offset').addEventListener('click', () => {
+  if (!state.selectedBone) return;
+  state.partOffsets.delete(state.selectedBone);
+  selectPart(state.selectedBone);
+  onPreviewTime();
+});
+
+const previewCanvasEl = document.getElementById('preview-canvas');
+previewCanvasEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
+window.addEventListener('mousemove', onPreviewCanvasMouseMove);
+window.addEventListener('mouseup', onPreviewCanvasMouseUp);
 
 createPlayback({
   sliderEl: document.getElementById('preview-time'),
@@ -337,3 +469,4 @@ function setMode(mode) {
 }
 document.getElementById('tab-craftpix').addEventListener('click', () => setMode('craftpix'));
 document.getElementById('tab-template').addEventListener('click', () => setMode('template'));
+})();
