@@ -200,23 +200,47 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1, selectedBoneName
   }
 }
 
+// Soma o dx/dy/dangle de um osso com o do osso que ele segue (followBone),
+// recursivamente (ex: se A segue B e B segue C, A recebe a soma dos tres).
+// O "seen" evita loop infinito se alguem criar um ciclo por engano.
+function resolveFollowedDelta(boneName, overrides, seen) {
+  if (seen.has(boneName)) return { dx: 0, dy: 0, dangle: 0 };
+  seen.add(boneName);
+  const o = overrides.get(boneName);
+  if (!o) return { dx: 0, dy: 0, dangle: 0 };
+  let dx = o.dx || 0;
+  let dy = o.dy || 0;
+  let dangle = o.dangle || 0;
+  if (o.followBone) {
+    const parent = resolveFollowedDelta(o.followBone, overrides, seen);
+    dx += parent.dx;
+    dy += parent.dy;
+    dangle += parent.dangle;
+  }
+  return { dx, dy, dangle };
+}
+
 // Aplica correcoes manuais por osso (offset de posicao/angulo, pivo e
 // camada) SEM tocar nos dados extraidos do Unity -- e so uma camada por
 // cima, opcional, guardada a parte no rig-profile. Chame depois de
 // computePose(), antes de drawPose().
-// overrides: Map<boneName, {dx,dy,dangle,pivotX,pivotY,zIndex}> (todos opcionais)
+// overrides: Map<boneName, {dx,dy,dangle,pivotX,pivotY,zIndex,followBone}>
+// (todos opcionais). followBone (nome de outro osso) faz esse osso herdar
+// TAMBEM o dx/dy/dangle daquele -- util pra pecas presas rigidamente a outra
+// (ex: Face 01 deve sempre acompanhar qualquer ajuste feito na Head).
 function applyManualOverrides(pose, overrides) {
   if (!overrides || overrides.size === 0) return pose;
   const withOverrides = pose.map((item) => {
     const o = overrides.get(item.boneName);
     if (!o) return item;
+    const { dx, dy, dangle } = resolveFollowedDelta(item.boneName, overrides, new Set());
     const next = {
       ...item,
       world: {
         ...item.world,
-        x: item.world.x + (o.dx || 0),
-        y: item.world.y + (o.dy || 0),
-        angle: item.world.angle + (o.dangle || 0),
+        x: item.world.x + dx,
+        y: item.world.y + dy,
+        angle: item.world.angle + dangle,
       },
     };
     if (o.pivotX !== undefined && o.pivotY !== undefined) {

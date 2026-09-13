@@ -94,8 +94,16 @@
   .canvas-block h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); }
   ul.log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   ul.log li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-  .preview-wrap { position: relative; display: inline-block; max-width: 100%; }
-  .preview-wrap canvas { display: block; max-width: 100%; }
+  #preview-viewport, #tpl-preview-viewport {
+    max-width: 100%;
+    max-height: 70vh;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #101114;
+  }
+  .preview-wrap { position: relative; display: inline-block; }
+  .preview-wrap canvas { display: block; }
   /* A "linha do chao" (groundLineY) e sempre 13/14 da altura da celula, em
      qualquer tamanho de saida (1x1/2x2/3x3) -- ver CELL_BY_SIZE em
      src/vtt-standards.js. Ancorar a timeline ai, em vez de embaixo do canvas
@@ -227,6 +235,8 @@
           Clique esquerdo arrasta a camada selecionada (na lista ou no preview). Clique direito numa peca do preview escolhe outra camada. O ajuste fica salvo por rig -- outros personagens da mesma serie herdam.
         </div>
         <div id="sel-part-name" style="color:var(--muted); margin-bottom:6px;">(nenhuma peca selecionada)</div>
+        <label>Seguir peca (move junto quando a peca seguida muda de offset)</label>
+        <select id="part-follow-bone"><option value="">(nenhuma)</option></select>
         <div class="row">
           <div>
             <label>Offset X (px)</label>
@@ -379,12 +389,14 @@
     <!-- preview do modo Craftpix -->
     <div id="preview-block" class="card" style="display:none">
       <h3 style="margin-top:0">Preview (para conferir antes do bake)</h3>
-      <div class="preview-wrap">
-        <canvas id="preview-canvas" width="512" height="896"></canvas>
-        <div class="preview-timeline">
-          <span>t</span>
-          <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
-          <span id="preview-time-label">0.00s</span>
+      <div id="preview-viewport">
+        <div class="preview-wrap">
+          <canvas id="preview-canvas" width="512" height="896"></canvas>
+          <div class="preview-timeline">
+            <span>t</span>
+            <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
+            <span id="preview-time-label">0.00s</span>
+          </div>
         </div>
       </div>
       <div class="preview-toolbar">
@@ -397,6 +409,21 @@
           <option value="0.1">0.1x</option>
         </select>
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-checker" checked /> Fundo quadriculado</label>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-guides" checked /> Guias do VTT (eixo + chao)</label>
+      </div>
+      <div class="preview-toolbar" style="margin-top:4px;">
+        <span>Zoom (scroll do mouse sobre o preview): </span>
+        <button id="btn-zoom-out" class="secondary icon">-</button>
+        <button id="btn-zoom-reset" class="secondary">100%</button>
+        <button id="btn-zoom-in" class="secondary icon">+</button>
+      </div>
+      <div class="preview-toolbar" style="margin-top:4px;">
+        <button id="btn-load-reference" class="secondary">Carregar imagem de referencia</button>
+        <button id="btn-clear-reference" class="secondary" disabled>Remover referencia</button>
+        <label style="margin:0; display:flex; align-items:center; gap:4px;">
+          Opacidade
+          <input type="range" id="ref-opacity" min="0.1" max="1" step="0.05" value="0.6" style="width:80px;" />
+        </label>
       </div>
     </div>
     <div id="canvases"></div>

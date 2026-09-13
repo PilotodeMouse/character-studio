@@ -37,6 +37,15 @@ app.whenReady().then(() => {
     return res.filePaths[0];
   });
 
+  ipcMain.handle('select-reference-image', async () => {
+    const res = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    return res.filePaths[0];
+  });
+
   createWindow();
 
   app.on('activate', () => {
