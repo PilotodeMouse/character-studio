@@ -68,6 +68,24 @@ function computePose(rig, clip, t, zIndexByName) {
 // (do scml-parser, que tem exatamente esses valores por arquivo). Quando o
 // item tem um pivotOverride (de applyManualOverrides), ele substitui so o
 // pivotX/pivotY do arquivo, mantendo width/height reais da imagem.
+//
+// PIVO -- ponto que ja custou caro, nao "simplifique":
+// no Spriter o pivot_x/pivot_y e normalizado a partir do canto INFERIOR-
+// esquerdo, com Y para CIMA. Todos os PNGs desses pacotes vem com
+// pivot_y="1", ou seja, o pivo esta no TOPO da imagem. O drawImage do canvas
+// trabalha com o canto SUPERIOR-esquerdo e Y para baixo, entao o pivo em
+// coordenadas de imagem e (pivotX*w, (1-pivotY)*h) e o offset de desenho e o
+// negativo disso: -(1 - pivotY) * h.
+// Usar -pivotY*h (o que o codigo fazia antes) sobe cada peca pela PROPRIA
+// altura dela -- a Head (480px) subia 480 e a Face 01 (240px) subia 240,
+// gerando 240px de deriva entre duas pecas que sao filhas do mesmo osso.
+// Era a causa dos "gaps" que levaram ao PIXELS_PER_UNIT=50 e da impressao de
+// que cabeca e face precisavam ser linkadas na mao (nao precisam: as duas ja
+// sao filhas de bone_007 tanto no .scml quanto no prefab).
+//
+// scale escala a pose INTEIRA (posicao e tamanho do sprite juntos). Escalar
+// so a posicao desmonta o personagem: as juntas se aproximam e os sprites
+// continuam do tamanho original.
 function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
   for (const item of pose) {
     if (item.sprite.alpha <= 0) continue;
@@ -88,11 +106,11 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1) {
     ctx.translate(px, py);
     ctx.rotate((angleDeg * Math.PI) / 180);
     ctx.scale(
-      item.world.scaleX * (item.sprite.flipX ? -1 : 1),
-      item.world.scaleY * (item.sprite.flipY ? -1 : 1)
+      item.world.scaleX * scale * (item.sprite.flipX ? -1 : 1),
+      item.world.scaleY * scale * (item.sprite.flipY ? -1 : 1)
     );
     const offsetX = -pivot.pivotX * w;
-    const offsetY = -pivot.pivotY * h;
+    const offsetY = -(1 - pivot.pivotY) * h;
     ctx.drawImage(img, offsetX, offsetY, w, h);
     ctx.restore();
   }

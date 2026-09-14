@@ -10,7 +10,10 @@ const { cellSpecFor } = require('./vtt-standards');
 // mesma pose de EAST e marcada como placeholder no retorno.
 // partOffsets (opcional): Map<boneName,{dx,dy,dangle}> com correcoes manuais
 // do usuario, aplicadas por cima da pose real antes de desenhar.
-function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets }) {
+// scale: a MESMA "Escala do personagem dentro da celula" usada no preview
+// (cfg.scale). Sem isso o bake sai num tamanho diferente do que voce calibrou
+// na tela -- era assim ate agora: o preview aplicava a escala e o bake nao.
+function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets, scale = 1 }) {
   const cell = cellSpecFor(size);
   const canvas = createCanvas(cell.w * frameCount, cell.h * rows.length);
   const ctx = canvas.getContext('2d');
@@ -41,7 +44,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
         x: cellX + cell.bodyAxisX + originOffset.x,
         y: cellY + cell.groundLineY + originOffset.y,
       };
-      drawPose(ctx, pose, images, pivots, origin, 1);
+      drawPose(ctx, pose, images, pivots, origin, scale);
       ctx.restore();
     }
   });

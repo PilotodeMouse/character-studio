@@ -314,7 +314,7 @@ function hitTestCraftpixPart(xLocal, yLocal, pose) {
     const localX = dx * cos - dy * sin;
     const localY = dx * sin + dy * cos;
     const offsetX = -pivot.pivotX * w;
-    const offsetY = -pivot.pivotY * h;
+    const offsetY = -(1 - pivot.pivotY) * h; // mesma convencao do drawPose -- ver unity-skeleton.js
     if (localX >= offsetX && localX <= offsetX + w && localY >= offsetY && localY <= offsetY + h) {
       return item.boneName;
     }
@@ -435,6 +435,7 @@ async function onBakeClick() {
       rows,
       frameCount: job.frames,
       size: cfg.size,
+      scale: cfg.scale,
       originOffset: { x: cfg.offsetX, y: cfg.offsetY },
       partOffsets: state.partOffsets,
       createCanvas: (w, h) => {

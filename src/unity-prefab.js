@@ -6,13 +6,16 @@ const { parseUnityYaml } = require('./unity-yaml');
 // Unity guarda posicao/escala em "unidades", nao pixels. O .meta de cada PNG
 // diz spritePixelsToUnits=100, e multiplicar por 100 reconstroi exatamente
 // as coordenadas cruas do .scml (x=223.805732 etc -- conferido byte a byte).
-// MAS o .scml embutido nesses pacotes (so a pose "Base", usada para montar o
-// rig) foi exportado numa escala 2x maior do que a usada pra gerar os PNGs
-// oficiais da Craftpix: renderizando com fator 100 o personagem sai
-// "esparramado" (gaps entre cabeca/corpo/pernas que nao existem na arte de
-// referencia); com fator 50 a montagem bate com a arte oficial. Calibrado
-// visualmente contra os PNG Sequences originais -- ver README.
-const PIXELS_PER_UNIT = 50;
+//
+// HISTORICO: esse fator ja foi 50. A justificativa era que com 100 o
+// personagem saia "esparramado" (gaps entre cabeca/corpo/pernas). O gap nao
+// vinha da escala: vinha de um bug de pivo no drawPose (unity-skeleton.js),
+// que empurrava CADA peca pra cima pela propria altura dela -- ver o
+// comentario la. Com o pivo corrigido, o fator 100 reproduz a arte oficial da
+// Craftpix pixel a pixel: bbox 367x525 no nosso render contra 367x526 no PNG
+// de referencia do Idle (Bloody_Alchemist), sem calibracao manual nenhuma.
+// Nao volte pra 50.
+const PIXELS_PER_UNIT = 100;
 
 function buildRig(prefabAssetText, guidToPathname) {
   const docs = parseUnityYaml(prefabAssetText);
