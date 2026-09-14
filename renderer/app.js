@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose, applyManualOverrides } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
@@ -16,7 +16,7 @@ const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT } = require('../src/vtt-standards');
+const { EXPORT, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -35,6 +35,11 @@ let state = {
   lastOrigin: null,
   lastCfg: null,
   drag: null,
+  referenceImage: null,
+  refScale: 1,
+  refOffsetX: 0,
+  refOffsetY: 0,
+  zoom: 1,
 };
 
 function log(msg, cls) {
@@ -64,6 +69,18 @@ function loadImage(filePath) {
     img.onload = () => resolve(img);
     img.onerror = reject;
     img.src = `data:image/png;base64,${buf.toString('base64')}`;
+  });
+}
+
+const MIME_BY_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+function loadImageAnyFormat(filePath) {
+  return new Promise((resolve, reject) => {
+    const buf = fs.readFileSync(filePath);
+    const mime = MIME_BY_EXT[path.extname(filePath).toLowerCase()] || 'image/png';
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = `data:${mime};base64,${buf.toString('base64')}`;
   });
 }
 
@@ -125,8 +142,25 @@ async function onPickPack() {
   document.getElementById('txt-character-name').value = toKebabCase(path.basename(folder));
 
   applyRigProfileIfKnown();
+  applyAutoFitScale();
   onPreviewTime();
   renderLayersList();
+}
+
+// Reduz (nunca aumenta) a "Escala do personagem dentro da celula" o quanto
+// for preciso pra o personagem caber no tamanho de saida escolhido com 8px
+// de margem em cada lado, amostrando o alcance real do clip de Idle (bracos/
+// cabeca se movem, um frameso nao basta). Roda ao carregar o personagem e ao
+// trocar o tamanho -- a escala e diferente por tamanho porque a arte tem
+// dimensao fixa em pixels e as celulas 1x1/2x2/3x3 nao.
+function applyAutoFitScale() {
+  if (!state.rig) return;
+  const cfg = readConfig();
+  if (!cfg.idleClip) return;
+  const cell = cellSpecFor(cfg.size);
+  const bounds = computeAnimatedBounds(state.rig, cfg.idleClip, state.pivots, state.partOffsets);
+  const scale = fitScaleForBounds(bounds, cell, 8);
+  document.getElementById('num-scale').value = scale.toFixed(3);
 }
 
 function applyRigProfileIfKnown() {
@@ -141,7 +175,7 @@ function applyRigProfileIfKnown() {
       'ok',
       `Rig conhecido (assinatura <code>${rigId.slice(0, 8)}</code>) -- essa e a mesma estrutura de esqueleto de "${profile.sourceCharacterName}". Preferencias de bake aplicadas automaticamente.`
     );
-    document.getElementById('sel-size').value = profile.size || '2x2';
+    document.getElementById('sel-size').value = profile.size || '1x1';
     document.getElementById('num-frames-idle').value = profile.framesIdle || 4;
     document.getElementById('num-frames-walk').value = profile.framesWalk || 4;
     document.getElementById('num-scale').value = profile.scale || 1;
@@ -198,29 +232,115 @@ function onPreviewTime() {
   const clampedT = Math.min(t, cfg.idleClip.length);
   document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${cfg.idleClip.length.toFixed(2)}s`;
 
+  // O canvas de preview usa exatamente as mesmas dimensoes e a mesma linha
+  // do chao (groundLineY) que o bake de verdade (src/baker.js), assim o que
+  // se ve aqui e o que sai no .webp -- antes o preview usava canvas.height*0.85
+  // como aproximacao e ficava um pouco fora do lugar em relacao ao bake real.
+  const cell = cellSpecFor(cfg.size);
   const canvas = document.getElementById('preview-canvas');
+  if (canvas.width !== cell.w) canvas.width = cell.w;
+  if (canvas.height !== cell.h) canvas.height = cell.h;
+  // Zoom e so tamanho de RENDER (CSS) por cima da mesma resolucao interna --
+  // a matematica de hit-test/arrasto ja deriva o fator de conversao de
+  // rect.width/canvas.width a cada evento, entao nao precisa mudar em lugar
+  // nenhum alem daqui (ver canvasEventToLocalCraftpix).
+  canvas.style.width = `${cell.w * state.zoom}px`;
+  canvas.style.height = `${cell.h * state.zoom}px`;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName);
-  const pose = applyManualOverrides(rawPose, state.partOffsets);
-  const origin = { x: canvas.width / 2 + cfg.offsetX, y: canvas.height * 0.85 + cfg.offsetY };
-  ctx.save();
-  ctx.translate(origin.x, origin.y);
-  ctx.scale(cfg.scale, cfg.scale);
-  ctx.translate(-origin.x, -origin.y);
-  drawPose(ctx, pose, state.images, state.pivots, origin, 1);
 
-  if (state.selectedBone) {
-    const item = pose.find((p) => p.boneName === state.selectedBone);
-    if (item) {
-      ctx.strokeStyle = '#5b8cff';
-      ctx.lineWidth = 2 / cfg.scale;
-      ctx.beginPath();
-      ctx.arc(item.world.x + origin.x, -item.world.y + origin.y, 6 / cfg.scale, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+  if (state.referenceImage) {
+    // Escala uniforme (mesmo fator nos dois eixos) pra nao distorcer a
+    // proporcao original da imagem -- centralizada na celula, com
+    // deslocamento manual por cima (ver fitReferenceToCell/ref-offset-*).
+    const img = state.referenceImage;
+    const rw = img.width * state.refScale;
+    const rh = img.height * state.refScale;
+    const rx = (cell.w - rw) / 2 + state.refOffsetX;
+    const ry = (cell.h - rh) / 2 + state.refOffsetY;
+    ctx.save();
+    ctx.globalAlpha = parseFloat(document.getElementById('ref-opacity').value) || 0.6;
+    ctx.drawImage(img, rx, ry, rw, rh);
+    ctx.restore();
   }
+
+  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName, state.partOffsets);
+  const pose = applyManualOverrides(rawPose, state.partOffsets);
+  const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
+  // A escala vai pelo proprio drawPose (que escala posicao E sprite juntos),
+  // exatamente como o bakeGrid faz -- assim preview e bake percorrem o mesmo
+  // caminho e nao tem como divergirem.
+  ctx.save();
+  drawPose(ctx, pose, state.images, state.pivots, origin, cfg.scale, state.selectedBone);
   ctx.restore();
+
+  // Guias do padrao VTT, em espaco de pixel BRUTO da celula -- nao entram no
+  // ctx.scale(cfg.scale) porque representam a geometria fixa da celula, nao
+  // algo que encolhe junto com o personagem. Espelha a folha de padroes em
+  // https://isometric-tactics.pages.dev/desktop/pages/standards :
+  // limite da celula, losango do piso, eixo do corpo, linha do chao e a
+  // altura util (do topo ate a linha do chao).
+  if (document.getElementById('preview-chk-guides').checked) {
+    ctx.save();
+
+    // 1. Limite da celula -- o recorte real do frame no spritesheet. Meio
+    // pixel de deslocamento pra linha de 1px cair inteira dentro do canvas
+    // em vez de ser cortada pela metade nas bordas.
+    ctx.strokeStyle = '#6b6b6b';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, cell.w - 2, cell.h - 2);
+
+    // 2. Losango do piso: a projecao isometrica de UM tile no chao, centrado
+    // no cruzamento do eixo do corpo com a linha do chao. Largura = a celula
+    // inteira, altura = metade (proporcao 2:1 do isometrico do VTT).
+    const dw = cell.w / 2;
+    const dh = cell.w / 4;
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cell.bodyAxisX, cell.groundLineY - dh);
+    ctx.lineTo(cell.bodyAxisX + dw, cell.groundLineY);
+    ctx.lineTo(cell.bodyAxisX, cell.groundLineY + dh);
+    ctx.lineTo(cell.bodyAxisX - dw, cell.groundLineY);
+    ctx.closePath();
+    ctx.stroke();
+
+    // 3. Eixo do corpo (tracejado azul).
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#5b8cff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cell.bodyAxisX, 0);
+    ctx.lineTo(cell.bodyAxisX, cell.h);
+    ctx.stroke();
+
+    // 4. Linha do chao (vermelha, continua).
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#ff3b30';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, cell.groundLineY);
+    ctx.lineTo(cell.w, cell.groundLineY);
+    ctx.stroke();
+
+    // 5. Rotulos. Tamanho de fonte preso ao zoom pra continuarem legiveis
+    // quando a celula 1x1 (256px) e desenhada pequena, sem virar tapume
+    // quando a 3x3 (768px) e desenhada grande.
+    const fs = Math.max(9, Math.round(cell.w / 26));
+    ctx.setLineDash([]);
+    ctx.font = `${fs}px ui-monospace, monospace`;
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ff3b30';
+    ctx.fillText(`ground y=${cell.groundLineY}`, 6, cell.groundLineY + 4);
+    ctx.fillStyle = '#5b8cff';
+    ctx.fillText(`axis x=${cell.bodyAxisX}`, cell.bodyAxisX + 5, cell.groundLineY - fs - 6);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    const usable = `altura util ${cell.groundLineY - 4} px`;
+    ctx.fillText(usable, cell.w - ctx.measureText(usable).width - 6, cell.groundLineY + 4);
+    ctx.fillText(`${cell.w}x${cell.h}`, 6, 6);
+
+    ctx.restore();
+  }
 
   state.lastPose = pose;
   state.lastOrigin = origin;
@@ -239,6 +359,33 @@ function selectPart(boneName) {
   const filePivot = bone && bone.sprite && state.pivots.get(bone.sprite.pngName);
   document.getElementById('part-pivot-x').value = o.pivotX !== undefined ? o.pivotX : filePivot ? filePivot.pivotX : 0;
   document.getElementById('part-pivot-y').value = o.pivotY !== undefined ? o.pivotY : filePivot ? filePivot.pivotY : 1;
+
+  const followSel = document.getElementById('part-follow-bone');
+  const spriteBoneNames = boneName
+    ? [...state.rig.bones.values()].filter((b) => b.sprite && b.sprite.pngName && b.name !== boneName).map((b) => b.name)
+    : [];
+  followSel.innerHTML = '<option value="">(nenhuma)</option>' + spriteBoneNames.map((n) => `<option value="${n}">${n}</option>`).join('');
+  followSel.value = o.followBone || '';
+
+  // O amortecimento de balanco nao vive necessariamente na propria peca: a
+  // maioria das pecas com sprite so tem a pose de bind (nao anima sozinha),
+  // o movimento de verdade vem de um osso-junta sem arte mais acima na
+  // hierarquia (ver findAnimatedAncestorName). Resolve contra o clip de Idle
+  // -- e o unico que o preview deste modo toca -- e guarda o resultado em
+  // state.selectedDampBone pra applyOffsetFieldsToSelected gravar no lugar certo.
+  const cfg = readConfig();
+  const dampBone = boneName && cfg.idleClip ? findAnimatedAncestorName(state.rig, cfg.idleClip, boneName) : boneName;
+  state.selectedDampBone = dampBone;
+  const d = (dampBone && state.partOffsets.get(dampBone)) || {};
+  document.getElementById('part-damp-x').value = (d.dampX || 0) * 100;
+  document.getElementById('part-damp-y').value = (d.dampY || 0) * 100;
+  document.getElementById('part-damp-angle').value = (d.dampAngle || 0) * 100;
+  const hint = document.getElementById('part-damp-hint');
+  if (hint) {
+    hint.textContent = !boneName || dampBone === boneName
+      ? 'Reduz o deslocamento/rotacao ANIMADOS dessa peca -- 0% mantem fiel ao clip original, 100% trava nesse componente (para de balancar).'
+      : `Essa peca nao anima sozinha nesse clip -- o balanco vem do osso "${dampBone}" mais acima na hierarquia; o amortecimento abaixo age nele (afeta tambem outras pecas presas ao mesmo osso).`;
+  }
 
   renderLayersList();
 }
@@ -268,28 +415,48 @@ function renderLayersList() {
     const layer = layers[i];
     const row = document.createElement('div');
     row.className = 'layer-row' + (state.selectedBone === layer.boneName ? ' selected' : '');
-    row.innerHTML = `<span class="layer-name">${layer.boneName}</span><button class="layer-btn" data-dir="up">&#9650;</button><button class="layer-btn" data-dir="down">&#9660;</button>`;
+    row.draggable = true;
+    row.innerHTML = `<span class="layer-handle">&#8942;&#8942;</span><span class="layer-name">${layer.boneName}</span>`;
     row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
-    row.querySelectorAll('.layer-btn').forEach((btn) => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        moveLayer(layer.boneName, btn.dataset.dir);
-      });
+    row.addEventListener('dragstart', (ev) => {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', layer.boneName);
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      row.classList.remove('drag-over');
+      const draggedBone = ev.dataTransfer.getData('text/plain');
+      if (!draggedBone || draggedBone === layer.boneName) return;
+      const rect = row.getBoundingClientRect();
+      const after = ev.clientY - rect.top > rect.height / 2;
+      reorderLayers(draggedBone, layer.boneName, after);
     });
     el.appendChild(row);
   }
 }
 
-function moveLayer(boneName, dir) {
-  const layers = currentLayers();
-  const idx = layers.findIndex((l) => l.boneName === boneName);
-  const swapIdx = dir === 'up' ? idx + 1 : idx - 1;
-  if (swapIdx < 0 || swapIdx >= layers.length) return;
-  // reatribui zIndex inteiro sequencial pra todo mundo (evita empates) e
-  // troca os dois que o usuario pediu pra trocar.
-  const order = layers.map((l) => l.boneName);
-  [order[idx], order[swapIdx]] = [order[swapIdx], order[idx]];
-  order.forEach((name, i) => {
+// draggedBone e solto sobre targetBone; after decide se ele entra antes ou
+// depois do alvo na lista (exibida de frente/topo pra fundo). Reatribui
+// zIndex inteiro sequencial pra todo mundo, igual o antigo botao ^/v fazia.
+function reorderLayers(draggedBone, targetBone, after) {
+  const layers = currentLayers(); // ordem ascendente de z (fundo -> frente)
+  const displayed = [...layers].reverse().map((l) => l.boneName); // frente -> fundo, como na lista
+  const fromIdx = displayed.indexOf(draggedBone);
+  if (fromIdx === -1) return;
+  displayed.splice(fromIdx, 1);
+  let toIdx = displayed.indexOf(targetBone);
+  if (toIdx === -1) return;
+  if (after) toIdx += 1;
+  displayed.splice(toIdx, 0, draggedBone);
+  const backToFront = [...displayed].reverse();
+  backToFront.forEach((name, i) => {
     const existing = state.partOffsets.get(name) || {};
     state.partOffsets.set(name, { ...existing, zIndex: i });
   });
@@ -336,12 +503,36 @@ function canvasEventToLocalCraftpix(e) {
   };
 }
 
+// Clique esquerdo NUNCA troca a camada ativa sozinho -- a camada escolhida
+// na lista (ou por clique direito) e soberana, senao arrastar uma peca fina
+// que fica embaixo de outra maior vira uma armadilha (clica pra arrastar A,
+// o hit-test acha B por cima, e o arrasto sai errado). So clique direito
+// re-seleciona pelo que esta sob o cursor.
 function onPreviewCanvasMouseDown(e) {
   if (!state.lastPose) return;
   const { x, y } = canvasEventToLocalCraftpix(e);
+
+  if (e.button === 2) {
+    const hit = hitTestCraftpixPart(x, y, state.lastPose);
+    if (hit) {
+      selectPart(hit);
+      onPreviewTime(); // redesenha ja com o contorno vermelho na peca nova
+    }
+    return;
+  }
+  if (e.button !== 0) return;
+
   const hit = hitTestCraftpixPart(x, y, state.lastPose);
-  if (hit) selectPart(hit);
-  else if (!state.selectedBone) return;
+  if (!state.selectedBone) {
+    if (!hit) return;
+    selectPart(hit);
+  } else if (!hit) {
+    // clicou fora de qualquer peca (canvas vazio) -- desmarca em vez de
+    // arrastar as cegas a selecao atual pra um lugar aleatorio.
+    selectPart(null);
+    onPreviewTime();
+    return;
+  }
 
   document.getElementById('preview-canvas').classList.add('dragging');
   state.drag = { startX: x, startY: y, start: { ...(state.partOffsets.get(state.selectedBone) || { dx: 0, dy: 0, dangle: 0 }) } };
@@ -365,6 +556,31 @@ function onPreviewCanvasMouseUp() {
   document.getElementById('preview-canvas').classList.remove('dragging');
 }
 
+function clampPercent01(elId) {
+  return Math.min(1, Math.max(0, (parseFloat(document.getElementById(elId).value) || 0) / 100));
+}
+
+// Muda quem esta peca segue, preservando a posicao VISUAL atual (converte
+// pra absoluto somando o pai antigo, depois subtrai o pai novo) -- assim
+// ligar/trocar o "seguir" nao teleporta a peca, so muda o que ela acompanha
+// dali em diante.
+function setFollowBone(boneName, newFollow) {
+  const entry = { dx: 0, dy: 0, dangle: 0, ...(state.partOffsets.get(boneName) || {}) };
+  const oldFollow = entry.followBone || null;
+  const oldParent = oldFollow ? state.partOffsets.get(oldFollow) || {} : {};
+  const newParent = newFollow ? state.partOffsets.get(newFollow) || {} : {};
+
+  const absDx = entry.dx + (oldParent.dx || 0);
+  const absDy = entry.dy + (oldParent.dy || 0);
+  const absDangle = entry.dangle + (oldParent.dangle || 0);
+
+  entry.dx = absDx - (newParent.dx || 0);
+  entry.dy = absDy - (newParent.dy || 0);
+  entry.dangle = absDangle - (newParent.dangle || 0);
+  entry.followBone = newFollow || undefined;
+  state.partOffsets.set(boneName, entry);
+}
+
 function applyOffsetFieldsToSelected() {
   if (!state.selectedBone) return;
   const existing = state.partOffsets.get(state.selectedBone) || {};
@@ -376,6 +592,19 @@ function applyOffsetFieldsToSelected() {
     pivotX: parseFloat(document.getElementById('part-pivot-x').value),
     pivotY: parseFloat(document.getElementById('part-pivot-y').value),
   });
+
+  // O amortecimento grava no osso que REALMENTE anima (state.selectedDampBone,
+  // resolvido em selectPart), que pode ser diferente da peca clicada -- ver
+  // comentario em findAnimatedAncestorName (unity-skeleton.js).
+  const dampBone = state.selectedDampBone || state.selectedBone;
+  const existingDamp = state.partOffsets.get(dampBone) || {};
+  state.partOffsets.set(dampBone, {
+    ...existingDamp,
+    dampX: clampPercent01('part-damp-x'),
+    dampY: clampPercent01('part-damp-y'),
+    dampAngle: clampPercent01('part-damp-angle'),
+  });
+
   onPreviewTime();
 }
 
@@ -490,27 +719,140 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
+document.getElementById('sel-size').addEventListener('change', () => {
+  applyAutoFitScale();
+  onPreviewTime();
+});
 document.getElementById('preview-time').addEventListener('input', onPreviewTime);
 document.getElementById('num-scale').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-x').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
+document.getElementById('preview-sel-bg').addEventListener('change', (e) => {
+  const canvas = document.getElementById('preview-canvas');
+  canvas.classList.toggle('bg-checker', e.target.value === 'checker');
+  canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
+});
+document.getElementById('preview-chk-guides').addEventListener('change', onPreviewTime);
+
+// Encontra a escala que faz a referencia caber inteira dentro da celula sem
+// distorcer a proporcao original (equivalente ao "contain" do CSS), depois
+// centraliza -- e o ponto de partida; escala/deslocamento continuam
+// ajustaveis a mao pelos campos ao lado.
+function fitReferenceToCell() {
+  if (!state.referenceImage) return;
+  const cfg = readConfig();
+  const cell = cellSpecFor(cfg.size);
+  const img = state.referenceImage;
+  state.refScale = Math.min(cell.w / img.width, cell.h / img.height);
+  state.refOffsetX = 0;
+  state.refOffsetY = 0;
+  document.getElementById('ref-scale').value = state.refScale.toFixed(3);
+  document.getElementById('ref-offset-x').value = 0;
+  document.getElementById('ref-offset-y').value = 0;
+}
+
+document.getElementById('btn-load-reference').addEventListener('click', async () => {
+  const filePath = await ipcRenderer.invoke('select-reference-image');
+  if (!filePath) return;
+  const img = await loadImageAnyFormat(filePath);
+  state.referenceImage = img;
+  fitReferenceToCell();
+  document.getElementById('btn-clear-reference').disabled = false;
+  document.getElementById('reference-controls').style.display = 'flex';
+  onPreviewTime();
+});
+document.getElementById('btn-clear-reference').addEventListener('click', (e) => {
+  state.referenceImage = null;
+  e.target.disabled = true;
+  document.getElementById('reference-controls').style.display = 'none';
+  onPreviewTime();
+});
+document.getElementById('ref-opacity').addEventListener('input', onPreviewTime);
+document.getElementById('ref-scale').addEventListener('input', () => {
+  state.refScale = parseFloat(document.getElementById('ref-scale').value) || 1;
+  onPreviewTime();
+});
+document.getElementById('ref-offset-x').addEventListener('input', () => {
+  state.refOffsetX = parseFloat(document.getElementById('ref-offset-x').value) || 0;
+  onPreviewTime();
+});
+document.getElementById('ref-offset-y').addEventListener('input', () => {
+  state.refOffsetY = parseFloat(document.getElementById('ref-offset-y').value) || 0;
+  onPreviewTime();
+});
+document.getElementById('btn-ref-fit').addEventListener('click', () => {
+  fitReferenceToCell();
+  onPreviewTime();
+});
+
+// Zoom centrado no mouse: guarda o ponto do canvas sob o cursor antes de
+// mudar o zoom e realinha o scroll do viewport pra ele continuar sob o
+// cursor depois -- efeito comum de editor grafico (Figma, Photoshop).
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 6;
+function setZoom(newZoomRaw, anchor) {
+  const viewport = document.getElementById('preview-viewport');
+  const oldZoom = state.zoom;
+  const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, newZoomRaw));
+  if (newZoom === oldZoom) return;
+  let cx, cy, ax, ay;
+  if (anchor) {
+    const rect = viewport.getBoundingClientRect();
+    ax = anchor.clientX - rect.left;
+    ay = anchor.clientY - rect.top;
+    cx = ax + viewport.scrollLeft;
+    cy = ay + viewport.scrollTop;
+  }
+  state.zoom = newZoom;
+  document.getElementById('btn-zoom-reset').textContent = `${Math.round(newZoom * 100)}%`;
+  onPreviewTime();
+  if (anchor) {
+    viewport.scrollLeft = cx * (newZoom / oldZoom) - ax;
+    viewport.scrollTop = cy * (newZoom / oldZoom) - ay;
+  }
+}
+document.getElementById('preview-viewport').addEventListener(
+  'wheel',
+  (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    setZoom(state.zoom * factor, e);
+  },
+  { passive: false }
+);
+document.getElementById('btn-zoom-in').addEventListener('click', () => setZoom(state.zoom * 1.25));
+document.getElementById('btn-zoom-out').addEventListener('click', () => setZoom(state.zoom / 1.25));
+document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoom(1));
 
 document.getElementById('part-offset-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-y').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-angle').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-pivot-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-pivot-y').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-x').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-y').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-damp-angle').addEventListener('input', applyOffsetFieldsToSelected);
+document.getElementById('part-follow-bone').addEventListener('change', (e) => {
+  if (!state.selectedBone) return;
+  setFollowBone(state.selectedBone, e.target.value || null);
+  selectPart(state.selectedBone);
+  onPreviewTime();
+});
 document.getElementById('btn-reset-part-offset').addEventListener('click', () => {
   if (!state.selectedBone) return;
   state.partOffsets.delete(state.selectedBone);
+  if (state.selectedDampBone && state.selectedDampBone !== state.selectedBone) {
+    state.partOffsets.delete(state.selectedDampBone);
+  }
   selectPart(state.selectedBone);
   onPreviewTime();
 });
 
 const previewCanvasEl = document.getElementById('preview-canvas');
 previewCanvasEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
+previewCanvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousemove', onPreviewCanvasMouseMove);
 window.addEventListener('mouseup', onPreviewCanvasMouseUp);
 

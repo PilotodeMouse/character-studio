@@ -11,8 +11,9 @@ const { cellSpecFor } = require('./vtt-standards');
 // partOffsets (opcional): Map<boneName,{dx,dy,dangle}> com correcoes manuais
 // do usuario, aplicadas por cima da pose real antes de desenhar.
 // scale: a MESMA "Escala do personagem dentro da celula" usada no preview
-// (cfg.scale). Sem isso o bake sai num tamanho diferente do que voce calibrou
-// na tela -- era assim ate agora: o preview aplicava a escala e o bake nao.
+// (cfg.scale / campo num-scale, calculada por fitScaleForBounds). Sem isso o
+// bake sai num tamanho diferente do que voce calibrou na tela -- era assim
+// ate agora: o preview aplicava a escala e o bake ignorava.
 function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets, scale = 1 }) {
   const cell = cellSpecFor(size);
   const canvas = createCanvas(cell.w * frameCount, cell.h * rows.length);
@@ -31,7 +32,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName), partOffsets);
+      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName, partOffsets), partOffsets);
 
       ctx.save();
       ctx.beginPath();

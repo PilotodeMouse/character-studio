@@ -9,12 +9,12 @@ const { parseUnityYaml } = require('./unity-yaml');
 //
 // HISTORICO: esse fator ja foi 50. A justificativa era que com 100 o
 // personagem saia "esparramado" (gaps entre cabeca/corpo/pernas). O gap nao
-// vinha da escala: vinha de um bug de pivo no drawPose (unity-skeleton.js),
-// que empurrava CADA peca pra cima pela propria altura dela -- ver o
-// comentario la. Com o pivo corrigido, o fator 100 reproduz a arte oficial da
-// Craftpix pixel a pixel: bbox 367x525 no nosso render contra 367x526 no PNG
-// de referencia do Idle (Bloody_Alchemist), sem calibracao manual nenhuma.
-// Nao volte pra 50.
+// vinha da escala: vinha de um bug de pivo no drawPose/computeAnimatedBounds
+// (unity-skeleton.js), que empurrava CADA peca pra cima pela propria altura
+// dela -- ver o comentario la. Com o pivo corrigido, o fator 100 reproduz a
+// arte oficial da Craftpix pixel a pixel: bbox 367x525 no nosso render contra
+// 367x526 no PNG de referencia do Idle (Bloody_Alchemist), sem calibracao
+// manual nenhuma. Nao volte pra 50.
 const PIXELS_PER_UNIT = 100;
 
 function buildRig(prefabAssetText, guidToPathname) {
