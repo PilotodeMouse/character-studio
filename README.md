@@ -12,47 +12,64 @@ npm install
 npm start
 ```
 
-## Descoberta central: de onde vem a animacao de verdade
+Ou de dentro do Explorer: `Iniciar App.bat` na raiz do repo.
 
-O `Animations.scml` desses pacotes **nao contem as animacoes** (Idle,
-Walking, Slashing...) -- ele so tem uma unica pose estatica de referencia
-("Base"), usada pelo Spriter2UnityDX para montar o rig. As animacoes de
-verdade (curvas de rotacao/posicao por osso, com timing real) estao
-**embutidas no `.unitypackage`**, dentro do `.prefab` gerado pelo
-Spriter2UnityDX, como `AnimationClip`s nativos do Unity serializados em YAML
-texto. `src/unity-yaml.js` faz o parse desse formato (documentos `--- !u!ID
-&fileID` concatenados), `src/unity-prefab.js` reconstroi a hierarquia de
-ossos e os clips, e `src/unity-clip-sampler.js` reimplementa a interpolacao
-Hermite do Unity para amostrar qualquer instante `t` de qualquer clip.
+## De onde vem a animacao de verdade
 
-Isso significa que o app usa a animacao **real** (18 clips: Idle, Walking,
-Running, Slashing, Dying, etc.), nao uma reconstrucao aproximada nem os
-frames ja renderizados em PNG Sequences (que so existem para 1 direcao e um
-numero fixo de frames escolhido pela Craftpix).
+**Correcao (14/09/2026): a afirmacao anterior deste README de que o `.scml` so tem uma pose estatica
+"Base" estava ERRADA** -- verificado byte a byte contra varios pacotes (Bloody Alchemist, Pumpkin Head Guy,
+Goblin). O `.scml` tem as animacoes completas (17 a 18 clips, com keyframes reais de posicao/angulo/escala
+por osso), e o `.scml` embutido dentro do proprio `.unitypackage` e identico (mesmo md5) ao que acompanha
+o pack solto.
+
+O app hoje ainda le a animacao pelo caminho do Unity (`.unitypackage` -> `.prefab` YAML -> `AnimationClip`),
+nao pelo `.scml` diretamente -- ver "Pendente" abaixo. Esse caminho funciona bem quando o `.prefab` foi
+exportado como YAML texto, mas pacotes mais antigos (Unity ~2017) trazem o `.prefab` serializado em
+BINARIO, e o parser devolve 0 ossos/0 clips (ex: Pumpkin Head Guy). `src/scml-rig.js` ja implementa e
+valida o caminho alternativo lendo direto do `.scml` (que e sempre XML texto, nunca falha por isso), mas
+ainda nao esta ligado na interface.
 
 ## Arquitetura
 
 - `src/unity-package.js` -- extrai o `.unitypackage` (gzip+tar) e mapeia guid -> pathname
-- `src/unity-yaml.js` -- parser do YAML serializado do Unity (cuidado: fileIDs sao inteiros de 64 bits, maiores que `Number.MAX_SAFE_INTEGER` -- sao tratados como string)
-- `src/unity-prefab.js` -- monta a hierarquia de ossos (GameObject+Transform+SpriteRenderer) e extrai os `AnimationClip`
+- `src/unity-yaml.js` -- parser do YAML serializado do Unity (fileIDs sao inteiros de 64 bits, maiores que `Number.MAX_SAFE_INTEGER` -- tratados como string)
+- `src/unity-prefab.js` -- monta a hierarquia de ossos (GameObject+Transform+SpriteRenderer) e extrai os `AnimationClip`. `PIXELS_PER_UNIT=100` (nao mude -- ver comentario no arquivo, era 50 como curativo de um bug de pivo ja corrigido)
 - `src/unity-clip-sampler.js` -- avaliacao Hermite das curvas (posicao + quaternion) no tempo `t`
-- `src/unity-skeleton.js` -- compoe o transform mundial de cada osso e desenha os sprites anexados num canvas
-- `src/scml-parser.js` -- le o `.scml` so para pivot/dimensao de cada PNG e para o `z_index` de camadas (o Unity exporta `m_SortingOrder=0` pra tudo nesses pacotes; a ordem real vem do `.scml`)
-- `src/craftpix-profile.js` -- detecta a estrutura "craftpix-classic" e aplica o mapeamento default de animacoes (`Idle`->idle, `Walking`->walk) **automaticamente**, porque toda a serie Chibi da Craftpix compartilha o mesmo rig-base
-- `src/rig-profile.js` -- fingerprint do rig (nomes de ossos + hierarquia) para lembrar tamanho/escala/offset calibrados e reaplicar em outros personagens da mesma serie
-- `src/baker.js` + `src/vtt-standards.js` + `src/validate.js` -- monta o grid final e valida contra o padrao do VTT
+- `src/unity-skeleton.js` -- compoe o transform mundial de cada osso e desenha os sprites anexados num canvas (`drawPose`/`computePose`/`computeAnimatedBounds`/`applyManualOverrides`) -- o modulo mais sensivel do projeto, ver comentario grande sobre a convencao de pivo do Spriter ali dentro antes de mexer
+- `src/scml-parser.js` -- le o `.scml`: pivot/dimensao de cada PNG, `z_index` de camadas (o Unity exporta `m_SortingOrder=0` pra tudo nesses pacotes) e as animacoes completas
+- `src/scml-rig.js` -- caminho ALTERNATIVO de pose/animacao direto do `.scml`, sem depender do `.unitypackage`. Validado, ainda nao ligado no `renderer/app.js`
+- `src/alpha-bounds.js` -- mede a caixa de pixels realmente opacos de cada PNG (a moldura exportada pela Craftpix tem 40-60% de ar), usada pelo auto-fit de escala
+- `src/back-art.js` -- merge de imagens de costas (opcional) com as da frente, peca a peca, pra linha NORTH do bake
+- `src/craftpix-profile.js` -- detecta a estrutura "craftpix-classic", aplica o mapeamento default de animacoes (`Idle`->idle, `Walking`->walk) e detecta a subpasta opcional de arte de costas (`Vector Parts/Back` ou `Costas`)
+- `src/rig-profile.js` -- fingerprint do rig (nomes de ossos + hierarquia). Formato de saida (tamanho/frames) e herdado por TODOS os personagens do mesmo esqueleto; ajustes manuais por peca ficam isolados por nome de personagem (`characters[nome]`) -- NUNCA vazam entre personagens, mesmo do mesmo rig
+- `src/baker.js` + `src/vtt-standards.js` + `src/validate.js` -- monta o grid final e valida contra o padrao do VTT (`fitScaleForBounds` calcula a escala que faz o personagem caber na celula, so reduz, nunca amplia)
+- `scripts/check-renderer-wiring.js` -- roda sem abrir o Electron; confere que todo `getElementById` do renderer acha um id real no `index.html`, todo import de `src/` existe de verdade e todo canal IPC tem handler. Rode depois de qualquer mudanca em `renderer/*.js` ou `index.html`
+- `scripts/export-part-templates.js` -- gera, a partir do `.scml` de um personagem-base, um PNG-guia por peca (tamanho exato + cruz no pivo + fantasma da arte original) pra usar como template num software de vetor
+
+## Producao de skins em escala (varios personagens, mesmo rig)
+
+Pra desenhar centenas de personagens reaproveitando o mesmo esqueleto/animacao: duplique a pasta do
+personagem-base inteira e troque so os PNGs em `PNG/Vector Parts/`, mantendo o MESMO NOME DE ARQUIVO e o
+MESMO TAMANHO DE CANVAS de cada peca (o app desenha com `drawImage(img, x, y, w, h)` usando w/h do `.scml`,
+nao o tamanho real do PNG -- arte de dimensao diferente sai esticada). `Animations.scml` e o
+`.unitypackage` nao mudam entre skins, sao o rig compartilhado. Use `scripts/export-part-templates.js` pra
+gerar os guias de canvas/pivo de cada peca antes de desenhar.
+
+Pra arte de costas de verdade (nao mirror): crie `PNG/Vector Parts/Back/` (ou `Costas/`) com PNGs dos
+mesmos nomes -- pode ser parcial, so as pecas que voce redesenhar sao usadas, o resto cai pra arte da
+frente automaticamente.
 
 ## Uso
 
 1. `npm start`
 2. **Selecionar pasta do personagem** -> escolha a pasta de UM personagem (ex: `Esqueletos/Skeleton_Crusader_1`), nao a biblioteca inteira
 3. O app detecta o perfil, extrai o `.unitypackage` e lista os clips reais disponiveis
-4. Confira/ajuste o mapeamento Idle/Walk, tamanho da celula e a **escala/deslocamento** no preview (a pose eh calculada certo, mas o ponto de ancoragem chao/centro varia por arquetipo -- calibre uma vez)
+4. Confira/ajuste o mapeamento Idle/Walk; a **escala** dentro da celula e calculada automaticamente pro tamanho VTT escolhido (1x1 por padrao), ajuste fino se quiser
 5. **Bake** -> escolha a pasta de saida -> gera `idle.webp` e `walk.webp` dentro de `<saida>/<nome-do-personagem>/`
-6. Essa calibracao (tamanho/escala/offset) fica salva por assinatura de rig -- o proximo personagem da mesma serie (mesmos nomes de osso) ja vem pre-preenchido
+6. O formato de saida (tamanho/frames) fica salvo por assinatura de rig e e herdado pelos proximos personagens da mesma serie; ajustes manuais por peca ficam isolados por personagem
 
 ## Limitacoes conhecidas
 
-- Pacotes sem view de costas (a maioria dos Chibi da Craftpix e desenhada de um angulo so) geram a linha NORTH como copia de EAST, marcada como aviso no log -- estruturalmente valido pro VTT, mas visualmente nao ha uma vista traseira real
-- So Idle/Walk sao bakeados por padrao; os outros clips (Slashing, Running, Dying, etc.) existem no rig e podem ser exportados manualmente trocando o clip selecionado, mas ainda nao tem um botao dedicado
-- FX/arma com alpha animado por clip (`m_FloatCurves`) ainda nao e lido -- partes como Sword/SlashFX usam so o alpha da pose de bind (funciona bem pra Idle/Walk, pode ficar errado em bakes de ataque)
+- `scml-rig.js` (caminho alternativo, sem depender do `.unitypackage`) esta validado mas nao ligado na UI -- e o que faz pacotes com `.prefab` binario (ex: Pumpkin Head Guy) nao carregarem hoje
+- So Idle/Walk sao bakeados por padrao; os outros clips (Slashing, Running, Dying, etc.) existem no rig mas nao tem botao dedicado de export
+- FX/arma com alpha animado por clip (`m_FloatCurves`) ainda nao e lido -- partes como Sword/SlashFX usam so o alpha da pose de bind

@@ -3,3 +3,4 @@ scratch-*.png
 scratch-*.webp
 scratch-bake-out/
 *.log
+Claude outputs/
