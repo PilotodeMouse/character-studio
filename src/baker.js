@@ -4,16 +4,25 @@
 const { computePose, drawPose, applyManualOverrides } = require('./unity-skeleton');
 const { cellSpecFor } = require('./vtt-standards');
 
-// rows: array de { row: 'north'|'east', clip, hasArt } na ordem em que devem
-// ser desenhadas. Quando hasArt=false (personagem sem view de costas, comum
-// nesses pacotes Craftpix de frente unica), a linha e preenchida com a
-// mesma pose de EAST e marcada como placeholder no retorno.
-// partOffsets (opcional): Map<boneName,{dx,dy,dangle}> com correcoes manuais
-// do usuario, aplicadas por cima da pose real antes de desenhar.
+// rows: array de { row: 'north'|'east', clip, hasArt, images } na ordem em
+// que devem ser desenhadas.
+// - hasArt=false: sem view de costas nenhuma (nem pose nem arte propria) --
+//   a linha e preenchida com a mesma pose de EAST e marcada como placeholder.
+// - images (opcional): substitui o `images` principal so pra esta linha --
+//   e o que permite uma view de costas DESENHADA (nao so a mesma arte da
+//   frente numa pose diferente). Normalmente vem de mergeImagesForRow
+//   (renderer/app.js), que usa o PNG de costas quando existe e cai pro PNG
+//   da frente peca a peca quando nao (arte parcial de costas e permitida).
+// partOffsets (opcional): Map<boneName,{dx,dy,dangle,dampX,dampY,dampAngle,...}>
+// com correcoes manuais do usuario. Precisa ir tanto pro computePose quanto
+// pro applyManualOverrides -- o primeiro cobre o amortecimento (dampX/Y/Angle,
+// que age no espaco local de cada osso, antes da composicao da hierarquia) e
+// o segundo cobre offset/pivo/follow (que agem no mundo, depois). So passar
+// pro segundo (como este codigo fazia ate aqui) faz o amortecimento nunca
+// aparecer no bake, so no preview.
 // scale: a MESMA "Escala do personagem dentro da celula" usada no preview
-// (cfg.scale / campo num-scale, calculada por fitScaleForBounds). Sem isso o
-// bake sai num tamanho diferente do que voce calibrou na tela -- era assim
-// ate agora: o preview aplicava a escala e o bake ignorava.
+// (cfg.scale). Sem isso o bake sai num tamanho diferente do que voce calibrou
+// na tela -- era assim ate agora: o preview aplicava a escala e o bake nao.
 function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets, scale = 1 }) {
   const cell = cellSpecFor(size);
   const canvas = createCanvas(cell.w * frameCount, cell.h * rows.length);
@@ -30,6 +39,8 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
       );
     }
 
+    const rowImages = rowSpec.images || images;
+
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
       const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName, partOffsets), partOffsets);
@@ -45,7 +56,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
         x: cellX + cell.bodyAxisX + originOffset.x,
         y: cellY + cell.groundLineY + originOffset.y,
       };
-      drawPose(ctx, pose, images, pivots, origin, scale);
+      drawPose(ctx, pose, rowImages, pivots, origin, scale);
       ctx.restore();
     }
   });

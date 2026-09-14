@@ -35,6 +35,20 @@ const EXTRA_ANIMATIONS = [
   'Idle Blinking',
 ];
 
+// Nome da subpasta opcional com arte de costas DESENHADA (nao so uma pose
+// diferente da mesma arte da frente). Fica dentro da propria "Vector Parts"
+// pra viajar junto quando alguem copia a pasta do personagem inteira. Aceita
+// "Back" ou "Costas" pra nao forcar padrao de idioma.
+const BACK_ART_DIRNAMES = ['Back', 'Costas'];
+
+function findBackArtDir(vectorPartsDir) {
+  for (const name of BACK_ART_DIRNAMES) {
+    const p = path.join(vectorPartsDir, name);
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return p;
+  }
+  return null;
+}
+
 function detectCraftpixClassic(characterDir) {
   const vectorPartsDir = path.join(characterDir, 'PNG', 'Vector Parts');
   const unityDir = path.join(characterDir, 'Unity Package');
@@ -49,9 +63,10 @@ function detectCraftpixClassic(characterDir) {
     vectorPartsDir,
     scmlPath: path.join(vectorPartsDir, scmlFile),
     unitypackagePath: path.join(unityDir, unityFile),
+    backArtDir: findBackArtDir(vectorPartsDir), // null se o personagem nao tem view de costas propria
     defaultAnimationMap: { ...DEFAULT_ANIMATION_MAP },
     extraAnimations: EXTRA_ANIMATIONS,
   };
 }
 
-module.exports = { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS };
+module.exports = { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS, BACK_ART_DIRNAMES };

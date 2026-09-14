@@ -137,6 +137,23 @@
   .layer-row .layer-btn:hover { color: var(--text); }
   #speed-row { display: flex; align-items: center; gap: 6px; }
   #speed-row select { width: auto; }
+
+  #preview-viewport {
+    overflow: auto;
+    max-height: 640px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+  }
+  #preview-canvas.bg-checker {
+    background:
+      linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
+      linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
+      linear-gradient(45deg, transparent 75%, #2a2d33 75%) 0 0 / 16px 16px,
+      linear-gradient(-45deg, transparent 75%, #2a2d33 75%) 0 0 / 16px 16px;
+    background-color: #1a1c20;
+  }
+  #preview-canvas.bg-dadada { background: #dadada; }
 </style>
 </head>
 <body>
@@ -167,17 +184,21 @@
 
         <label class="checkbox-row">
           <input type="checkbox" id="chk-has-north" />
-          Pacote tem view de costas (NORTH) separada
+          Usar uma animacao diferente para NORTH (raro)
         </label>
         <select id="sel-anim-north" disabled><option value="">(usa a mesma pose de EAST)</option></select>
+        <div style="color:var(--muted); font-size:11px; margin-top:4px;">
+          A arte de costas em si (se o personagem tiver) e detectada sozinha em
+          <code>PNG/Vector Parts/Back</code> ou <code>Costas</code> -- nao precisa marcar nada aqui pra ela ser usada.
+        </div>
 
         <h2>Formato de saida</h2>
         <div class="row">
           <div>
             <label>Tamanho</label>
             <select id="sel-size">
-              <option value="1x1">1x1 (256x448)</option>
-              <option value="2x2" selected>2x2 (512x896)</option>
+              <option value="1x1" selected>1x1 (256x448)</option>
+              <option value="2x2">2x2 (512x896)</option>
               <option value="3x3">3x3 (768x1344)</option>
             </select>
           </div>
@@ -236,6 +257,25 @@
           <div>
             <label>Pivo Y (0-1)</label>
             <input type="number" id="part-pivot-y" value="1" step="0.02" min="0" max="1" />
+          </div>
+        </div>
+        <label>Segue outra peca (mesmo movimento)</label>
+        <select id="part-follow-bone"><option value="">(nenhuma)</option></select>
+
+        <h2>Amortecimento do movimento (reduz o balanco)</h2>
+        <div id="part-damp-hint" style="color:var(--muted); font-size:11px; margin-bottom:6px;"></div>
+        <div class="row">
+          <div>
+            <label>X (%)</label>
+            <input type="number" id="part-damp-x" value="0" min="0" max="100" step="5" />
+          </div>
+          <div>
+            <label>Y (%)</label>
+            <input type="number" id="part-damp-y" value="0" min="0" max="100" step="5" />
+          </div>
+          <div>
+            <label>Rotacao (%)</label>
+            <input type="number" id="part-damp-angle" value="0" min="0" max="100" step="5" />
           </div>
         </div>
         <button id="btn-reset-part-offset" class="secondary" style="margin-top:6px;">Zerar ajuste desta peca</button>
@@ -307,8 +347,8 @@
           <div>
             <label>Tamanho</label>
             <select id="tpl-sel-size">
-              <option value="1x1">1x1 (256x448)</option>
-              <option value="2x2" selected>2x2 (512x896)</option>
+              <option value="1x1" selected>1x1 (256x448)</option>
+              <option value="2x2">2x2 (512x896)</option>
               <option value="3x3">3x3 (768x1344)</option>
             </select>
           </div>
@@ -349,7 +389,28 @@
     <!-- preview do modo Craftpix -->
     <div id="preview-block" class="card" style="display:none">
       <h3 style="margin-top:0">Preview (para conferir antes do bake)</h3>
-      <canvas id="preview-canvas" width="512" height="896"></canvas>
+
+      <div class="preview-controls" style="margin-bottom:8px;">
+        <label style="margin:0; flex:0 0 auto;">Fundo</label>
+        <select id="preview-sel-bg" style="flex:0 0 150px;">
+          <option value="checker" selected>Transparente</option>
+          <option value="dadada">Solido #dadada</option>
+        </select>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-guides" checked /> Guias do VTT</label>
+        <select id="preview-sel-row" style="flex:0 0 110px; display:none;">
+          <option value="east" selected>Ver: East</option>
+          <option value="north">Ver: North (costas)</option>
+        </select>
+        <span style="flex:1"></span>
+        <button id="btn-zoom-out" class="secondary icon" type="button">&minus;</button>
+        <button id="btn-zoom-reset" class="secondary icon" type="button" style="min-width:56px;">100%</button>
+        <button id="btn-zoom-in" class="secondary icon" type="button">+</button>
+      </div>
+
+      <div id="preview-viewport">
+        <canvas id="preview-canvas" class="bg-checker" width="256" height="448"></canvas>
+      </div>
+
       <div class="preview-controls">
         <button id="preview-btn-play" class="secondary icon">&#9654; Play</button>
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-loop" checked /> Loop</label>
@@ -362,6 +423,22 @@
         <span>t</span>
         <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
         <span id="preview-time-label">0.00s</span>
+      </div>
+
+      <div class="row" style="margin-top:8px; align-items:center;">
+        <button id="btn-load-reference" class="secondary" type="button">Carregar imagem de referencia</button>
+        <button id="btn-clear-reference" class="secondary" type="button" disabled>Remover referencia</button>
+      </div>
+      <div id="reference-controls" class="preview-controls" style="display:none; flex-wrap:wrap;">
+        <label style="margin:0;">Opacidade</label>
+        <input type="range" id="ref-opacity" min="0" max="1" step="0.05" value="0.6" style="flex:0 0 100px;" />
+        <label style="margin:0;">Escala</label>
+        <input type="number" id="ref-scale" value="1" step="0.01" style="flex:0 0 70px;" />
+        <label style="margin:0;">X</label>
+        <input type="number" id="ref-offset-x" value="0" step="1" style="flex:0 0 60px;" />
+        <label style="margin:0;">Y</label>
+        <input type="number" id="ref-offset-y" value="0" step="1" style="flex:0 0 60px;" />
+        <button id="btn-ref-fit" class="secondary icon" type="button">Ajustar a celula</button>
       </div>
     </div>
     <div id="canvases"></div>

@@ -80,7 +80,11 @@ function findAnimatedAncestorName(rig, clip, boneName) {
 // pontos no tempo -- um unico frame nao basta pra saber o alcance maximo,
 // ja que bracos/cabeca se movem. Usado pra descobrir se o personagem cabe
 // numa celula de saida sem cortar (ver fitScaleForBounds em vtt-standards.js).
-function computeAnimatedBounds(rig, clip, pivots, partOffsets, samples = 12) {
+// alphaBoxes (opcional): Map<nomeDoPNG, {x,y,w,h}|null> de src/alpha-bounds.js.
+// Com ele, mede so o desenho de cada peca; sem ele, mede o retangulo cheio do
+// arquivo -- que nesses pacotes da Craftpix tem 40-60% de moldura transparente
+// e faz o auto-fit encolher o personagem sem necessidade.
+function computeAnimatedBounds(rig, clip, pivots, partOffsets, alphaBoxes = null, samples = 12) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i <= samples; i++) {
     const t = clip ? (i / samples) * clip.length : 0;
@@ -103,11 +107,18 @@ function computeAnimatedBounds(rig, clip, pivots, partOffsets, samples = 12) {
       const sy = item.world.scaleY * (item.sprite.flipY ? -1 : 1);
       const offsetX = -pivot.pivotX * w;
       const offsetY = -(1 - pivot.pivotY) * h; // ver spriteDrawOffset em drawPose
+
+      const box = alphaBoxes ? alphaBoxes.get(item.sprite.pngName) : undefined;
+      if (box === null) continue; // peca 100% transparente nao ocupa espaco nenhum
+      const bx = offsetX + (box ? box.x : 0);
+      const by = offsetY + (box ? box.y : 0);
+      const bw = box ? box.w : w;
+      const bh = box ? box.h : h;
       const corners = [
-        [offsetX, offsetY],
-        [offsetX + w, offsetY],
-        [offsetX, offsetY + h],
-        [offsetX + w, offsetY + h],
+        [bx, by],
+        [bx + bw, by],
+        [bx, by + bh],
+        [bx + bw, by + bh],
       ];
       for (const [lx, ly] of corners) {
         const sxp = lx * sx;

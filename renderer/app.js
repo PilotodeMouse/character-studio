@@ -13,10 +13,12 @@ const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
 const { getZIndexByPartName } = require('../src/scml-zorder');
+const { computeAlphaBoxes } = require('../src/alpha-bounds');
+const { mergeImagesForRow } = require('../src/back-art');
 const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
+const { EXPORT, DEFAULT_SIZE, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -26,6 +28,9 @@ let state = {
   rig: null,
   pivots: new Map(),
   images: new Map(),
+  imagesBack: new Map(), // PNGs de costas (opcional), mesmas chaves de state.images -- ver src/back-art.js
+  alphaBoxes: null, // Map<png, caixa de pixels opacos> -- ver src/alpha-bounds.js
+  previewRow: 'east', // 'east' | 'north' -- so afeta o preview; o bake sempre desenha as duas linhas
   zIndexByName: new Map(),
   rigId: null,
   outputFolder: null,
@@ -89,6 +94,16 @@ async function onPickPack() {
   if (!folder) return;
   state.packFolder = folder;
 
+  // Personagem novo comeca do zero. Sem isso, os ajustes manuais do
+  // personagem que estava aberto continuavam vivos no state e desmontavam o
+  // proximo a ser importado -- os offsets sao em pixels da arte de UM
+  // personagem, nao tem sentido nenhum no outro.
+  state.partOffsets = new Map();
+  state.selectedBone = null;
+  state.selectedDampBone = null;
+  state.lastPose = null;
+  state.savedScale = null;
+
   const detected = detectCraftpixClassic(folder);
   const profileBanner = document.getElementById('profile-banner');
   if (!detected) {
@@ -119,6 +134,26 @@ async function onPickPack() {
     if (fs.existsSync(p)) state.images.set(name, await loadImage(p));
   }
 
+  // Arte de costas e OPCIONAL e PARCIAL: casa por nome de arquivo com a arte
+  // da frente (mesmo pivo/dimensao do .scml), e so as pecas que existirem la
+  // dentro sao substituidas -- ver src/back-art.js e src/craftpix-profile.js.
+  state.imagesBack = new Map();
+  if (detected.backArtDir) {
+    for (const name of state.pivots.keys()) {
+      const p = path.join(detected.backArtDir, name);
+      if (fs.existsSync(p)) state.imagesBack.set(name, await loadImage(p));
+    }
+  }
+
+  // Le pixel a pixel, entao roda UMA vez por pacote e fica em cache no state:
+  // e o que faz o auto-fit medir o desenho em vez da moldura transparente.
+  state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  });
+
   log(`Extraindo ${path.basename(detected.unitypackagePath)}...`);
   const pkg = await extractUnityPackage(detected.unitypackagePath);
   const prefabGuid = pkg.findGuidByPathnameSuffix('.prefab');
@@ -126,9 +161,16 @@ async function onPickPack() {
   state.rig = buildRig(pkg.readAsset(prefabGuid), pkg.guidToPathname);
 
   document.getElementById('pack-info').textContent =
-    `${path.basename(folder)} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs`;
+    `${path.basename(folder)} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
+    (state.imagesBack.size ? `, ${state.imagesBack.size} PNGs de costas` : '');
   document.getElementById('config-section').style.display = 'block';
   document.getElementById('preview-block').style.display = 'block';
+
+  // O toggle de preview East/North so faz sentido mostrar quando ha arte de
+  // costas de verdade pra olhar -- sem isso, north e sempre identico a east.
+  document.getElementById('preview-sel-row').style.display = state.imagesBack.size ? '' : 'none';
+  state.previewRow = 'east';
+  document.getElementById('preview-sel-row').value = 'east';
 
   const clipNames = state.rig.clips.map((c) => c.name).filter((n) => n !== 'Base');
   const optionsHtml = clipNames.map((n) => `<option value="${n}">${n}</option>`).join('');
@@ -153,12 +195,16 @@ async function onPickPack() {
 // cabeca se movem, um frameso nao basta). Roda ao carregar o personagem e ao
 // trocar o tamanho -- a escala e diferente por tamanho porque a arte tem
 // dimensao fixa em pixels e as celulas 1x1/2x2/3x3 nao.
-function applyAutoFitScale() {
+// force=true ignora a escala salva do personagem -- e o caso de quando o
+// usuario troca o TAMANHO da celula, porque a escala que cabia em 2x2 nao
+// cabe em 1x1.
+function applyAutoFitScale(force = false) {
   if (!state.rig) return;
+  if (!force && state.savedScale) return; // escala calibrada a mao pelo usuario tem prioridade
   const cfg = readConfig();
   if (!cfg.idleClip) return;
   const cell = cellSpecFor(cfg.size);
-  const bounds = computeAnimatedBounds(state.rig, cfg.idleClip, state.pivots, state.partOffsets);
+  const bounds = computeAnimatedBounds(state.rig, cfg.idleClip, state.pivots, state.partOffsets, state.alphaBoxes);
   const scale = fitScaleForBounds(bounds, cell, 8);
   document.getElementById('num-scale').value = scale.toFixed(3);
 }
@@ -168,28 +214,77 @@ function applyRigProfileIfKnown() {
   state.rigId = rigId;
   const rigBanner = document.getElementById('rig-banner');
 
-  const profile = profileStore.get(rigId);
-  if (profile) {
-    banner(
-      rigBanner,
-      'ok',
-      `Rig conhecido (assinatura <code>${rigId.slice(0, 8)}</code>) -- essa e a mesma estrutura de esqueleto de "${profile.sourceCharacterName}". Preferencias de bake aplicadas automaticamente.`
-    );
-    document.getElementById('sel-size').value = profile.size || '1x1';
-    document.getElementById('num-frames-idle').value = profile.framesIdle || 4;
-    document.getElementById('num-frames-walk').value = profile.framesWalk || 4;
-    document.getElementById('num-scale').value = profile.scale || 1;
-    document.getElementById('num-offset-x').value = profile.offsetX || 0;
-    document.getElementById('num-offset-y').value = profile.offsetY || 0;
-    document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
-    document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
-    state.partOffsets = new Map(Object.entries(profile.partOffsets || {}));
-  } else {
+  const characterName = toKebabCase(document.getElementById('txt-character-name').value);
+  const sig = `<code>${rigId.slice(0, 8)}</code>`;
+
+  // Ponto de partida limpo, sobrescrito abaixo so pelo que for legitimamente
+  // herdavel.
+  document.getElementById('sel-size').value = DEFAULT_SIZE;
+  document.getElementById('num-offset-x').value = 0;
+  document.getElementById('num-offset-y').value = 0;
+
+  const profile = profileStore.read(rigId);
+  if (!profile) {
     banner(
       rigBanner,
       'warn',
-      `Rig novo (assinatura <code>${rigId.slice(0, 8)}</code>) -- todos os personagens dessa mesma serie Chibi da Craftpix compartilham este esqueleto, entao suas escolhas de tamanho/escala serao lembradas para os proximos.`
+      `Rig novo (assinatura ${sig}) -- toda a serie Chibi da Craftpix compartilha este esqueleto, entao o formato de saida que voce escolher aqui ja vem pronto nos proximos personagens dela.`
     );
+    return;
+  }
+
+  // NIVEL ESQUELETO: formato de saida, valido pra serie inteira.
+  if (profile.size) document.getElementById('sel-size').value = profile.size;
+  if (profile.framesIdle) document.getElementById('num-frames-idle').value = profile.framesIdle;
+  if (profile.framesWalk) document.getElementById('num-frames-walk').value = profile.framesWalk;
+  document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
+  document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
+
+  // NIVEL PERSONAGEM: so os ajustes DELE PROPRIO. Os de outro personagem
+  // ficam atras de um botao, nunca aplicados por conta propria -- ver o
+  // comentario grande em src/rig-profile.js.
+  const mine = profile.characters[characterName];
+  const notes = [];
+
+  if (mine) {
+    state.partOffsets = new Map(Object.entries(mine.partOffsets || {}));
+    if (mine.scale) {
+      state.savedScale = mine.scale;
+      document.getElementById('num-scale').value = mine.scale;
+    }
+    document.getElementById('num-offset-x').value = mine.offsetX || 0;
+    document.getElementById('num-offset-y').value = mine.offsetY || 0;
+    notes.push(`Ajustes manuais de <b>${characterName}</b> restaurados.`);
+  }
+
+  if (profile.migratedFromV1 && profile.droppedPartOffsets) {
+    notes.push(
+      `Descartei ${profile.droppedPartOffsets} ajustes manuais antigos deste esqueleto: foram gravados na epoca do bug de pivo e eram compensacoes dele, entao reaplicar hoje desmontaria o personagem.`
+    );
+  }
+
+  banner(rigBanner, 'ok', `Rig conhecido (assinatura ${sig}). Formato de saida herdado da serie. ${notes.join(' ')}`);
+
+  const others = Object.keys(profile.characters).filter((n) => n !== characterName);
+  if (others.length) {
+    const opts = others.map((n) => `<option value="${n}">${n}</option>`).join('');
+    const offer = document.createElement('div');
+    offer.className = 'banner warn';
+    offer.innerHTML =
+      `Outros personagens deste esqueleto tem ajuste manual salvo. Copiar de ` +
+      `<select id="sel-copy-from" style="width:auto; display:inline-block;">${opts}</select> ` +
+      `<button id="btn-copy-offsets" class="secondary" style="padding:4px 8px;">Copiar</button>` +
+      `<div style="margin-top:4px; opacity:.8;">So vale a pena se a arte for a mesma -- por padrao cada personagem comeca sem ajuste nenhum.</div>`;
+    rigBanner.appendChild(offer);
+    document.getElementById('btn-copy-offsets').addEventListener('click', () => {
+      const from = document.getElementById('sel-copy-from').value;
+      const source = profile.characters[from];
+      if (!source) return;
+      state.partOffsets = new Map(Object.entries(source.partOffsets || {}));
+      selectPart(null);
+      onPreviewTime();
+      log(`Ajustes manuais de "${from}" copiados para este personagem.`, 'warn');
+    });
   }
 }
 
@@ -213,11 +308,23 @@ function readConfig() {
   };
 }
 
+// hasArt da linha NORTH agora reflete se existe ARTE de costas de verdade
+// (state.imagesBack), nao mais o checkbox "Pacote tem view de costas" --
+// esse checkbox e o select ao lado continuam servindo pra escolher uma
+// ANIMACAO diferente pra north (raro, mas alguns clips tem uma variante "de
+// costas"), independente de ter arte propria ou nao. Sem arte de costas, uma
+// clip diferente sozinha nao ajuda -- e por isso que so a arte liga o hasArt.
 function rowsFor(cfg, kind) {
   const eastClip = kind === 'idle' ? cfg.idleClip : cfg.walkClip;
-  const northClip = cfg.hasNorthView ? cfg.northClip || eastClip : null;
+  const hasBackArt = state.imagesBack.size > 0;
+  const northClip = (cfg.hasNorthView && cfg.northClip) || eastClip;
   return [
-    { row: 'north', clip: northClip || eastClip, hasArt: cfg.hasNorthView && !!northClip },
+    {
+      row: 'north',
+      clip: northClip,
+      hasArt: hasBackArt,
+      images: hasBackArt ? mergeImagesForRow(state.images, state.imagesBack) : undefined,
+    },
     { row: 'east', clip: eastClip, hasArt: true },
   ];
 }
@@ -264,14 +371,22 @@ function onPreviewTime() {
     ctx.restore();
   }
 
-  const rawPose = computePose(state.rig, cfg.idleClip, clampedT, state.zIndexByName, state.partOffsets);
+  // previewRow so troca a POSE (clip) e a ARTE mostradas na tela -- o bake
+  // sempre desenha as duas linhas (north e east) de qualquer forma. Existe
+  // so pra dar pra conferir o alinhamento da arte de costas ANTES de bakear
+  // 8 frames as cegas.
+  const isNorth = state.previewRow === 'north' && state.imagesBack.size > 0;
+  const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || cfg.idleClip : cfg.idleClip;
+  const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
+
+  const rawPose = computePose(state.rig, previewClip, clampedT, state.zIndexByName, state.partOffsets);
   const pose = applyManualOverrides(rawPose, state.partOffsets);
   const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
   // A escala vai pelo proprio drawPose (que escala posicao E sprite juntos),
   // exatamente como o bakeGrid faz -- assim preview e bake percorrem o mesmo
   // caminho e nao tem como divergirem.
   ctx.save();
-  drawPose(ctx, pose, state.images, state.pivots, origin, cfg.scale, state.selectedBone);
+  drawPose(ctx, pose, previewImages, state.pivots, origin, cfg.scale, state.selectedBone);
   ctx.restore();
 
   // Guias do padrao VTT, em espaco de pixel BRUTO da celula -- nao entram no
@@ -700,18 +815,22 @@ async function onBakeClick() {
     log(`Salvo: ${outPath}`, 'ok');
   }
 
-  profileStore.save(state.rigId, {
-    sourceCharacterName: cfg.characterName,
+  // Formato de saida vai pro nivel do esqueleto (a serie inteira herda);
+  // ajustes manuais ficam presos a ESTE personagem.
+  profileStore.saveForCharacter(state.rigId, cfg.characterName, {
     size: cfg.size,
     framesIdle: cfg.framesIdle,
     framesWalk: cfg.framesWalk,
+    hasNorthView: cfg.hasNorthView,
     scale: cfg.scale,
     offsetX: cfg.offsetX,
     offsetY: cfg.offsetY,
-    hasNorthView: cfg.hasNorthView,
     partOffsets: Object.fromEntries(state.partOffsets),
   });
-  log(`Preferencias salvas para o rig ${state.rigId.slice(0, 8)} -- outros personagens dessa serie vao herdar isso.`, 'ok');
+  log(
+    `Formato de saida salvo para o rig ${state.rigId.slice(0, 8)} (a serie herda); ajustes manuais salvos so para "${cfg.characterName}".`,
+    'ok'
+  );
 }
 
 document.getElementById('btn-pick-pack').addEventListener('click', onPickPack);
@@ -720,7 +839,7 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
 document.getElementById('sel-size').addEventListener('change', () => {
-  applyAutoFitScale();
+  applyAutoFitScale(true); // celula mudou: reencaixa mesmo que houvesse escala salva
   onPreviewTime();
 });
 document.getElementById('preview-time').addEventListener('input', onPreviewTime);
@@ -735,6 +854,10 @@ document.getElementById('preview-sel-bg').addEventListener('change', (e) => {
   canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
 });
 document.getElementById('preview-chk-guides').addEventListener('change', onPreviewTime);
+document.getElementById('preview-sel-row').addEventListener('change', (e) => {
+  state.previewRow = e.target.value;
+  onPreviewTime();
+});
 
 // Encontra a escala que faz a referencia caber inteira dentro da celula sem
 // distorcer a proporcao original (equivalente ao "contain" do CSS), depois
