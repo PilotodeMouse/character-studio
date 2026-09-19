@@ -194,6 +194,10 @@
         <select id="sel-anim-idle"></select>
         <label>Walk (opcional)</label>
         <select id="sel-anim-walk"><option value="">(nenhuma)</option></select>
+        <div style="color:var(--muted); font-size:11px; margin-top:4px;">
+          Define qual clip do rig vira o <code>walk.webp</code> no bake (o Idle acima vira o <code>idle.webp</code>).
+          Com <code>(nenhuma)</code>, o app gera so o idle.
+        </div>
 
         <label class="checkbox-row">
           <input type="checkbox" id="chk-has-north" />
@@ -407,10 +411,12 @@
           <option value="dadada">Solido #dadada</option>
         </select>
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-guides" checked /> Guias do VTT</label>
-        <select id="preview-sel-anim" style="flex:0 0 110px;">
-          <option value="idle">Ver: Idle</option>
-          <option value="walk">Ver: Walk</option>
-        </select>
+        <!-- Preenchido com TODOS os clips do rig em loadFromDetected: da pra
+             inspecionar Slashing/Throwing etc, que e onde arma e FX aparecem. -->
+        <select id="preview-sel-anim" style="flex:0 0 130px;"></select>
+        <label class="checkbox-row" style="margin:0;" title="Arma e efeito de corte tem alpha 0 fora dos clips de ataque; isso mostra as duas em fantasma pra dar pra posicionar a arte">
+          <input type="checkbox" id="preview-chk-show-hidden" /> Ocultas
+        </label>
         <select id="preview-sel-row" style="flex:0 0 110px; display:none;">
           <option value="east" selected>Ver: East</option>
           <option value="north">Ver: North (costas)</option>
@@ -430,9 +436,9 @@
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-loop" checked /> Loop</label>
         <select id="preview-sel-speed">
           <option value="1">1x</option>
-          <option value="0.5">0.5x</option>
-          <option value="0.25" selected>0.25x</option>
-          <option value="0.1">0.1x</option>
+          <option value="0.75">0.75x</option>
+          <option value="0.5" selected>0.5x</option>
+          <option value="0.25">0.25x</option>
         </select>
         <span>t</span>
         <input type="range" id="preview-time" min="0" max="1" step="0.01" value="0" />
@@ -470,9 +476,9 @@
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="tpl-preview-chk-loop" checked /> Loop</label>
         <select id="tpl-preview-sel-speed">
           <option value="1">1x</option>
-          <option value="0.5">0.5x</option>
-          <option value="0.25" selected>0.25x</option>
-          <option value="0.1">0.1x</option>
+          <option value="0.75">0.75x</option>
+          <option value="0.5" selected>0.5x</option>
+          <option value="0.25">0.25x</option>
         </select>
         <span>t</span>
         <input type="range" id="tpl-preview-time" min="0" max="1" step="0.01" value="0" />

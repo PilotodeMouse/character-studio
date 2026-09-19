@@ -284,6 +284,12 @@ async function loadFromDetected(detected, displayLabel) {
   if (clipNames.includes(DEFAULT_ANIMATION_MAP.idle)) document.getElementById('sel-anim-idle').value = DEFAULT_ANIMATION_MAP.idle;
   if (clipNames.includes(DEFAULT_ANIMATION_MAP.walk)) document.getElementById('sel-anim-walk').value = DEFAULT_ANIMATION_MAP.walk;
 
+  // "Ver:" do preview lista todos os clips (nao so os dois que vao pro bake),
+  // porque e nos de ataque que arma/FX ficam visiveis.
+  const previewSel = document.getElementById('preview-sel-anim');
+  previewSel.innerHTML = clipNames.map((n) => `<option value="${n}">Ver: ${n}</option>`).join('');
+  previewSel.value = document.getElementById('sel-anim-idle').value;
+
   // Nome do personagem: quem chamou (onPickPack/onPickTemplate) ja decidiu o
   // valor certo pro campo antes de chegar aqui -- pasta externa usa o nome
   // da pasta, template embutido comeca vazio (o usuario digita).
@@ -447,10 +453,13 @@ function rowsFor(cfg, kind) {
 
 // Qual clip o preview esta mostrando. Antes era sempre o Idle, e por isso
 // trocar o "Walk (opcional)" no mapeamento nao mudava nada na tela -- ele so
-// aparecia no .webp bakeado. O seletor "Ver:" escolhe qual dos dois inspecionar.
+// aparecia no .webp bakeado. O seletor "Ver:" lista TODOS os clips do rig,
+// nao so idle/walk: arma e SlashFX so tem alpha > 0 nos clips de ataque, e
+// e olhando o Slashing que da pra conferir a arte de arma nova.
 function previewBaseClip(cfg) {
   const want = document.getElementById('preview-sel-anim').value;
-  return want === 'walk' && cfg.walkClip ? cfg.walkClip : cfg.idleClip;
+  const byName = state.rig && state.rig.clips.find((c) => c.name === want);
+  return byName || cfg.idleClip;
 }
 
 function onPreviewTime() {
@@ -504,7 +513,16 @@ function onPreviewTime() {
   const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
 
   const rawPose = computePose(state.rig, previewClip, clampedT, state.zIndexByName, state.partOffsets);
-  const pose = applyManualOverrides(rawPose, state.partOffsets);
+  let pose = applyManualOverrides(rawPose, state.partOffsets);
+
+  // "Ocultas": arma e SlashFX ficam com alpha 0 fora dos clips de ataque (o
+  // prefab grava 0 no bind e quem acende e uma curva de m_Color.a). Sem isso
+  // nao da pra trocar/posicionar a arte de uma arma olhando o Idle -- a peca
+  // simplesmente nao aparece. So afeta o PREVIEW; o bake continua respeitando
+  // o alpha real do clip.
+  if (document.getElementById('preview-chk-show-hidden').checked) {
+    pose = pose.map((item) => (item.alpha > 0 ? item : { ...item, alpha: 0.35 }));
+  }
   const origin = { x: cell.bodyAxisX + cfg.offsetX, y: cell.groundLineY + cfg.offsetY };
   // A escala vai pelo proprio drawPose (que escala posicao E sprite juntos),
   // exatamente como o bakeGrid faz -- assim preview e bake percorrem o mesmo
@@ -1003,6 +1021,7 @@ document.getElementById('preview-sel-anim').addEventListener('change', () => {
   document.getElementById('preview-time').value = 0;
   onPreviewTime();
 });
+document.getElementById('preview-chk-show-hidden').addEventListener('change', onPreviewTime);
 document.getElementById('sel-size').addEventListener('change', () => {
   applyAutoFitScale(true); // celula mudou: reencaixa mesmo que houvesse escala salva
   onPreviewTime();
