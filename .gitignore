@@ -4,3 +4,4 @@ scratch-*.webp
 scratch-bake-out/
 *.log
 Claude outputs/
+scratch-*/

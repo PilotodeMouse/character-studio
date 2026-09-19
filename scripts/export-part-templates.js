@@ -28,9 +28,18 @@ const { DOMParser } = require('@xmldom/xmldom');
 global.DOMParser = DOMParser;
 const { parseSCML } = require('../src/scml-parser');
 
-const characterDir = process.argv[2];
+// --back gera os guias da VISTA DE COSTAS (linha NORTH do bake). Convencao,
+// confirmada contra um pacote da Craftpix que tem costas desenhadas de
+// verdade (Assassino, "Back - Idle" vs "Front - Idle"): a peca NAO troca de
+// lado nem e espelhada -- cada peca continua no mesmo slot, com o mesmo
+// canvas e o mesmo pivo, e so a superficie e redesenhada como se vista por
+// tras. Tem que ser assim porque o rig continua animando os MESMOS ossos com
+// o MESMO clip; so a textura muda (ver src/back-art.js).
+const wantBack = process.argv.includes('--back');
+const args = process.argv.slice(2).filter((a) => a !== '--back');
+const characterDir = args[0];
 if (!characterDir) {
-  console.error('Uso: node scripts/export-part-templates.js "<pasta do personagem-base>" [pasta-de-saida]');
+  console.error('Uso: node scripts/export-part-templates.js "<pasta do personagem-base>" [pasta-de-saida] [--back]');
   process.exit(1);
 }
 const vectorPartsDir = path.join(characterDir, 'PNG', 'Vector Parts');
@@ -39,7 +48,7 @@ if (!scmlFile) {
   console.error(`Nao achei um .scml em ${vectorPartsDir}`);
   process.exit(1);
 }
-const outDir = process.argv[3] || path.join(vectorPartsDir, '_guias-de-template');
+const outDir = args[1] || path.join(vectorPartsDir, wantBack ? '_guias-de-costas' : '_guias-de-template');
 fs.mkdirSync(outDir, { recursive: true });
 
 (async () => {
@@ -74,9 +83,21 @@ fs.mkdirSync(outDir, { recursive: true });
     ctx.moveTo(px, py - armLen);
     ctx.lineTo(px, py + armLen);
     ctx.stroke();
-    ctx.strokeStyle = '#6b6b6b';
+    ctx.strokeStyle = wantBack ? '#5b8cff' : '#6b6b6b';
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, part.width - 1, part.height - 1);
+
+    // Nos guias de costas, escreve o nome do slot: desenhando "de tras", e
+    // facil perder a nocao de qual peca e qual (o braco que aparece a
+    // esquerda na tela continua sendo o slot "Right Arm", porque o osso e o
+    // mesmo -- o personagem virou, o rig nao).
+    if (wantBack) {
+      const fs2 = Math.max(10, Math.round(Math.min(part.width, part.height) / 12));
+      ctx.font = `${fs2}px sans-serif`;
+      ctx.fillStyle = 'rgba(91,140,255,0.85)';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${part.name} (costas)`, 6, 6);
+    }
 
     const outPath = path.join(outDir, part.name);
     fs.writeFileSync(outPath, canvas.toBuffer('image/png'));
