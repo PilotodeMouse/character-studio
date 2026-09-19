@@ -85,3 +85,28 @@ mudanca pronta -- o renderer inteiro roda dentro de uma IIFE (`renderer/app.js`)
 serializado em BINARIO (nao YAML texto) que hoje falham silenciosamente com 0 ossos/0 clips -- ex: Pumpkin
 Head Guy (Unity 2017.1.1f1). Fazer o app usar `computeScmlPose`/`pivotsFromScml`/`clipsFromScml`/
 `computeScmlBounds` como fonte primaria e cair pro `.unitypackage` so como fallback.
+
+## Templates de rig embutidos (`src/rig-templates.js` + pasta `templates/`)
+
+Motivo: o usuario quer produzir "skins" (arte propria sobre o mesmo rig) sem precisar duplicar a pasta de
+um personagem-base da Craftpix a mao toda vez -- so quer soltar PNG/SVG por peca. `templates/<id>/` guarda
+uma copia completa de UM personagem-base (mesma estrutura `PNG/Vector Parts/Animations.scml` +
+`Unity Package/*.unitypackage`), versionada no proprio repo. `detectCraftpixClassic()` funciona nela sem
+adaptacao nenhuma -- e so mais uma pasta craftpix-classic, so que dentro do repo em vez de fora.
+
+So `skeleton-crusader` esta embutido por enquanto (~1.1MB, copiado de
+`Esqueletos/Skeleton_Crusader_1` da biblioteca Craftpix do usuario). Adicionar outro arquetipo de corpo e
+so repetir o `cp` pra `templates/<novo-id>/` (mesma estrutura de pastas) e adicionar uma entrada em
+`TEMPLATES` (`src/rig-templates.js`).
+
+Fluxo na UI (`renderer/app.js`): dropdown `#sel-template` + botao "Carregar template" chama
+`onPickTemplate()`, que carrega o rig com a arte DEFAULT do template inteira (mesmo caminho de
+`loadFromDetected()` que a pasta externa usa) e mostra `#template-parts-list` -- uma linha por peca
+canonica (`Body.png`, `Head.png`, ...) com botao "Carregar" (abre `select-image-file`, PNG ou SVG
+qualquer tamanho, `drawImage` escala pro w/h gravado no `.scml`) e "Padrao" pra reverter so aquela peca.
+Cada troca de peca so atualiza `state.images` + `state.alphaBoxes` daquela entrada e redesenha -- nao
+recarrega o `.unitypackage` nem as outras pecas.
+
+`onPickPack` (pasta externa) e `onPickTemplate` (template embutido) convergem no mesmo
+`loadFromDetected(detected, displayLabel)` logo depois de resolver o `detected` -- se mexer no fluxo de
+carregamento, mexa la, nao em cada um separado.

@@ -169,7 +169,20 @@
     <div id="mode-craftpix">
       <div class="card">
         <button id="btn-pick-pack">1. Selecionar pasta do personagem</button>
+        <div style="color:var(--muted); font-size:11px; margin:8px 0 4px;">ou, se voce so tem a arte propria (skin nova), use um rig embutido:</div>
+        <div class="row">
+          <select id="sel-template"><option value="">(escolher template)</option></select>
+          <button id="btn-pick-template" class="secondary" style="flex:0 0 auto;">Carregar template</button>
+        </div>
         <div id="pack-info" style="margin-top:8px; color: var(--muted);"></div>
+      </div>
+
+      <div id="template-parts-section" class="card" style="display:none">
+        <h2 style="margin-top:0;">Pecas do template (troque so as que quiser)</h2>
+        <div style="color:var(--muted); font-size:11px; margin-bottom:8px;">
+          PNG ou SVG -- qualquer tamanho, a peca sempre desenha no tamanho definido pelo rig. A que voce nao trocar usa a arte default do template.
+        </div>
+        <div id="template-parts-list"></div>
       </div>
 
       <div id="config-section" style="display:none">

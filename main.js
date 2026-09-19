@@ -40,7 +40,19 @@ app.whenReady().then(() => {
   ipcMain.handle('select-reference-image', async () => {
     const res = await dialog.showOpenDialog({
       properties: ['openFile'],
-      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg'] }],
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    return res.filePaths[0];
+  });
+
+  // Usado pelo fluxo de "template embutido": trocar UMA peca do rig (Body,
+  // Head, Sword...) por um arquivo proprio, PNG ou SVG (canvas desenha os
+  // dois do mesmo jeito via drawImage).
+  ipcMain.handle('select-image-file', async () => {
+    const res = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg'] }],
     });
     if (res.canceled || !res.filePaths.length) return null;
     return res.filePaths[0];

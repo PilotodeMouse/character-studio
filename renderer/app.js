@@ -19,6 +19,7 @@ const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile')
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
 const { EXPORT, DEFAULT_SIZE, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
+const { listTemplates, loadTemplate } = require('../src/rig-templates');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -45,6 +46,8 @@ let state = {
   refOffsetX: 0,
   refOffsetY: 0,
   zoom: 1,
+  activeTemplate: null, // {id, dir, detected, partNames} quando a fonte e um template embutido, null quando e pasta externa
+  templatePartOverrides: new Map(), // partName -> caminho do arquivo escolhido pelo usuario, so pra UI/status (a peca em si ja vive em state.images)
 };
 
 function log(msg, cls) {
@@ -77,7 +80,7 @@ function loadImage(filePath) {
   });
 }
 
-const MIME_BY_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+const MIME_BY_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
 function loadImageAnyFormat(filePath) {
   return new Promise((resolve, reject) => {
     const buf = fs.readFileSync(filePath);
@@ -93,7 +96,109 @@ async function onPickPack() {
   const folder = await ipcRenderer.invoke('select-pack-folder');
   if (!folder) return;
   state.packFolder = folder;
+  state.activeTemplate = null;
+  document.getElementById('template-parts-section').style.display = 'none';
 
+  const detected = detectCraftpixClassic(folder);
+  const profileBanner = document.getElementById('profile-banner');
+  if (!detected) {
+    banner(
+      profileBanner,
+      'err',
+      `Nao encontrei "PNG/Vector Parts/Animations.scml" + "Unity Package/*.unitypackage" nessa pasta. Selecione a pasta de UM personagem (ex: ".../Esqueletos/Skeleton_Crusader_1") -- ou use um template embutido acima, se voce so tem a arte propria.`
+    );
+    document.getElementById('pack-info').textContent = path.basename(folder);
+    return;
+  }
+  banner(profileBanner, 'ok', `Perfil detectado: <code>craftpix-classic</code>.`);
+  document.getElementById('txt-character-name').value = toKebabCase(path.basename(folder));
+  await loadFromDetected(detected, path.basename(folder));
+}
+
+// Fluxo alternativo: o rig (.scml + .unitypackage) vem embutido no proprio
+// app (src/rig-templates.js), o usuario so entra com a arte por peca. Ao
+// escolher o template, carrega primeiro com a arte DEFAULT dele (pra ja dar
+// pra ver/animar), e cada peca pode ser trocada individualmente depois pela
+// lista que renderTemplatePartsList() monta.
+async function onPickTemplate() {
+  const templateId = document.getElementById('sel-template').value;
+  if (!templateId) return;
+  const template = loadTemplate(templateId);
+  state.packFolder = null;
+  state.activeTemplate = template;
+
+  const profileBanner = document.getElementById('profile-banner');
+  banner(profileBanner, 'ok', `Template embutido carregado: <code>${template.id}</code>. Troque as pecas que quiser abaixo -- as que voce nao trocar usam a arte default do template.`);
+  document.getElementById('txt-character-name').value = '';
+
+  document.getElementById('template-parts-section').style.display = 'block';
+  renderTemplatePartsList();
+
+  await loadFromDetected(template.detected, template.id);
+}
+
+function renderTemplatePartsList() {
+  const el = document.getElementById('template-parts-list');
+  el.innerHTML = '';
+  if (!state.activeTemplate) return;
+  for (const partName of state.activeTemplate.partNames) {
+    const isCustom = state.templatePartOverrides && state.templatePartOverrides.has(partName);
+    const row = document.createElement('div');
+    row.className = 'layer-row';
+    row.innerHTML =
+      `<span class="layer-name">${partName}</span>` +
+      `<span style="color:var(--muted); font-size:11px; margin-right:6px;">${isCustom ? 'personalizada' : 'padrao'}</span>` +
+      `<button class="layer-btn" data-action="load">Carregar</button>` +
+      (isCustom ? `<button class="layer-btn" data-action="reset">Padrao</button>` : '');
+    row.querySelector('[data-action="load"]').addEventListener('click', () => onLoadTemplatePart(partName));
+    const resetBtn = row.querySelector('[data-action="reset"]');
+    if (resetBtn) resetBtn.addEventListener('click', () => onResetTemplatePart(partName));
+    el.appendChild(row);
+  }
+}
+
+// Troca SO essa peca em state.images (o rig/pose ja estao carregados, nao
+// precisa recarregar o .unitypackage nem o resto da arte) e reavalia a caixa
+// alfa dela pro auto-fit continuar medindo o desenho de verdade, nao a
+// moldura transparente antiga.
+async function onLoadTemplatePart(partName) {
+  const filePath = await ipcRenderer.invoke('select-image-file');
+  if (!filePath) return;
+  if (!state.templatePartOverrides) state.templatePartOverrides = new Map();
+  state.templatePartOverrides.set(partName, filePath);
+  state.images.set(partName, await loadImageAnyFormat(filePath));
+  state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  });
+  renderTemplatePartsList();
+  applyAutoFitScale(true);
+  onPreviewTime();
+  log(`Peca "${partName}" substituida por ${path.basename(filePath)}.`, 'ok');
+}
+
+async function onResetTemplatePart(partName) {
+  if (!state.templatePartOverrides) return;
+  state.templatePartOverrides.delete(partName);
+  const p = path.join(state.activeTemplate.detected.vectorPartsDir, partName);
+  state.images.set(partName, await loadImage(p));
+  state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  });
+  renderTemplatePartsList();
+  applyAutoFitScale(true);
+  onPreviewTime();
+}
+
+// Corpo compartilhado entre "pasta externa" (onPickPack) e "template
+// embutido" (onPickTemplate) -- a partir daqui os dois caminhos sao
+// identicos: mesma extracao de rig, mesmo preview, mesmo bake.
+async function loadFromDetected(detected, displayLabel) {
   // Personagem novo comeca do zero. Sem isso, os ajustes manuais do
   // personagem que estava aberto continuavam vivos no state e desmontavam o
   // proximo a ser importado -- os offsets sao em pixels da arte de UM
@@ -103,19 +208,7 @@ async function onPickPack() {
   state.selectedDampBone = null;
   state.lastPose = null;
   state.savedScale = null;
-
-  const detected = detectCraftpixClassic(folder);
-  const profileBanner = document.getElementById('profile-banner');
-  if (!detected) {
-    banner(
-      profileBanner,
-      'err',
-      `Nao encontrei "PNG/Vector Parts/Animations.scml" + "Unity Package/*.unitypackage" nessa pasta. Selecione a pasta de UM personagem (ex: ".../Esqueletos/Skeleton_Crusader_1").`
-    );
-    document.getElementById('pack-info').textContent = path.basename(folder);
-    return;
-  }
-  banner(profileBanner, 'ok', `Perfil detectado: <code>craftpix-classic</code>.`);
+  state.templatePartOverrides = new Map();
 
   const scmlText = fs.readFileSync(detected.scmlPath, 'utf8');
   const parsedScml = parseSCML(scmlText);
@@ -161,7 +254,7 @@ async function onPickPack() {
   state.rig = buildRig(pkg.readAsset(prefabGuid), pkg.guidToPathname);
 
   document.getElementById('pack-info').textContent =
-    `${path.basename(folder)} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
+    `${displayLabel} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
     (state.imagesBack.size ? `, ${state.imagesBack.size} PNGs de costas` : '');
   document.getElementById('config-section').style.display = 'block';
   document.getElementById('preview-block').style.display = 'block';
@@ -181,8 +274,9 @@ async function onPickPack() {
   if (clipNames.includes(DEFAULT_ANIMATION_MAP.idle)) document.getElementById('sel-anim-idle').value = DEFAULT_ANIMATION_MAP.idle;
   if (clipNames.includes(DEFAULT_ANIMATION_MAP.walk)) document.getElementById('sel-anim-walk').value = DEFAULT_ANIMATION_MAP.walk;
 
-  document.getElementById('txt-character-name').value = toKebabCase(path.basename(folder));
-
+  // Nome do personagem: quem chamou (onPickPack/onPickTemplate) ja decidiu o
+  // valor certo pro campo antes de chegar aqui -- pasta externa usa o nome
+  // da pasta, template embutido comeca vazio (o usuario digita).
   applyRigProfileIfKnown();
   applyAutoFitScale();
   onPreviewTime();
@@ -833,7 +927,20 @@ async function onBakeClick() {
   );
 }
 
+// Lista de templates embutidos (templates/<id>/) fica pronta desde o
+// carregamento da tela -- nao depende de nenhuma pasta ser selecionada.
+(function initTemplateDropdown() {
+  const sel = document.getElementById('sel-template');
+  for (const t of listTemplates()) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.label;
+    sel.appendChild(opt);
+  }
+})();
+
 document.getElementById('btn-pick-pack').addEventListener('click', onPickPack);
+document.getElementById('btn-pick-template').addEventListener('click', onPickTemplate);
 document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
