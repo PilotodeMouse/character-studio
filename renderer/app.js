@@ -181,7 +181,10 @@ function refreshAfterArtChange() {
   });
   renderTemplatePartsList();
   renderLayersList();
-  applyAutoFitScale(true);
+  // SEM force: se o usuario ja calibrou a escala a mao (state.savedScale),
+  // trocar a arte de uma peca nao deve descartar isso -- so personagem
+  // recem-carregado (savedScale ainda null) e que ganha um auto-fit novo.
+  applyAutoFitScale();
   onPreviewTime();
 }
 
@@ -1028,7 +1031,7 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
 document.getElementById('sel-anim-walk').addEventListener('change', () => {
-  applyAutoFitScale(true); // walk entra na conta do auto-fit junto com o idle
+  applyAutoFitScale(); // sem force -- so recalcula se o usuario ainda nao calibrou a mao
   onPreviewTime();
 });
 document.getElementById('preview-sel-anim').addEventListener('change', () => {
@@ -1041,7 +1044,15 @@ document.getElementById('sel-size').addEventListener('change', () => {
   onPreviewTime();
 });
 document.getElementById('preview-time').addEventListener('input', onPreviewTime);
-document.getElementById('num-scale').addEventListener('input', onPreviewTime);
+document.getElementById('num-scale').addEventListener('input', () => {
+  // Assim que o usuario mexe na escala, ela vira "calibrada a mao" na hora,
+  // nao so depois de um bake -- antes disso, so entrava em state.savedScale
+  // ao carregar um perfil ja salvo, entao qualquer coisa que rechamasse
+  // applyAutoFitScale(true) no meio da sessao (trocar a arte de uma peca,
+  // por exemplo) apagava o valor que o usuario acabou de digitar.
+  state.savedScale = parseFloat(document.getElementById('num-scale').value) || null;
+  onPreviewTime();
+});
 document.getElementById('num-offset-x').addEventListener('input', onPreviewTime);
 document.getElementById('num-offset-y').addEventListener('input', onPreviewTime);
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
