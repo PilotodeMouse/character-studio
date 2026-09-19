@@ -47,7 +47,12 @@ let state = {
   refOffsetY: 0,
   zoom: 1,
   activeTemplate: null, // {id, dir, detected, partNames} quando a fonte e um template embutido, null quando e pasta externa
-  templatePartOverrides: new Map(), // partName -> caminho do arquivo escolhido pelo usuario, so pra UI/status (a peca em si ja vive em state.images)
+  // Trocar a arte de uma peca vale pras DUAS fontes (template ou pasta do
+  // personagem). artSourceDir e a pasta de onde a arte original veio -- e o
+  // que permite o botao "voltar ao padrao" reler o arquivo do disco.
+  artSourceDir: null,
+  artPartNames: [], // todos os PNGs da pasta de origem (inclusive os que nenhum osso usa)
+  partArtOverrides: new Map(), // partName -> caminho escolhido pelo usuario, so pra UI/status (a peca em si ja vive em state.images)
 };
 
 function log(msg, cls) {
@@ -132,25 +137,25 @@ async function onPickTemplate() {
   document.getElementById('txt-character-name').value = '';
 
   // renderTemplatePartsList() depende de state.rig (pra saber quais pecas NAO
-  // tem osso) e de templatePartOverrides zerado -- as duas coisas so existem
+  // tem osso) e de partArtOverrides zerado -- as duas coisas so existem
   // depois do loadFromDetected, que chama as duas listas no final.
   await loadFromDetected(template.detected, template.id);
 }
 
-// So as pecas do template que NENHUM osso usa (faces alternativas, etc.) --
-// as que tem osso ja aparecem como linha no painel de camadas, com o mesmo
-// botao de trocar arte.
+// So as pecas que NENHUM osso usa (faces alternativas, etc.) -- as que tem
+// osso ja aparecem como linha no painel de camadas, com o mesmo botao de
+// trocar arte. Vale pra template embutido e pra pasta do personagem.
 function renderTemplatePartsList() {
   const el = document.getElementById('template-parts-list');
   el.innerHTML = '';
-  if (!state.activeTemplate) return;
+  if (!state.artSourceDir) return;
   const usedByBones = new Set(
     [...(state.rig ? state.rig.bones.values() : [])].filter((b) => b.sprite && b.sprite.pngName).map((b) => b.sprite.pngName)
   );
-  const orphans = state.activeTemplate.partNames.filter((p) => !usedByBones.has(p));
+  const orphans = state.artPartNames.filter((p) => !usedByBones.has(p));
   document.getElementById('template-parts-section').style.display = orphans.length ? 'block' : 'none';
   for (const partName of orphans) {
-    const isCustom = state.templatePartOverrides && state.templatePartOverrides.has(partName);
+    const isCustom = state.partArtOverrides && state.partArtOverrides.has(partName);
     const row = document.createElement('div');
     row.className = 'layer-row';
     row.innerHTML =
@@ -158,23 +163,16 @@ function renderTemplatePartsList() {
       `<span style="color:var(--muted); font-size:11px; margin-right:6px;">${isCustom ? 'personalizada' : 'padrao'}</span>` +
       `<button class="layer-btn" data-action="load">Carregar</button>` +
       (isCustom ? `<button class="layer-btn" data-action="reset">Padrao</button>` : '');
-    row.querySelector('[data-action="load"]').addEventListener('click', () => onLoadTemplatePart(partName));
+    row.querySelector('[data-action="load"]').addEventListener('click', () => onSwapPartArt(partName));
     const resetBtn = row.querySelector('[data-action="reset"]');
-    if (resetBtn) resetBtn.addEventListener('click', () => onResetTemplatePart(partName));
+    if (resetBtn) resetBtn.addEventListener('click', () => onResetPartArt(partName));
     el.appendChild(row);
   }
 }
 
-// Troca SO essa peca em state.images (o rig/pose ja estao carregados, nao
-// precisa recarregar o .unitypackage nem o resto da arte) e reavalia a caixa
-// alfa dela pro auto-fit continuar medindo o desenho de verdade, nao a
-// moldura transparente antiga.
-async function onLoadTemplatePart(partName) {
-  const filePath = await ipcRenderer.invoke('select-image-file');
-  if (!filePath) return;
-  if (!state.templatePartOverrides) state.templatePartOverrides = new Map();
-  state.templatePartOverrides.set(partName, filePath);
-  state.images.set(partName, await loadImageAnyFormat(filePath));
+function refreshAfterArtChange() {
+  // A caixa alfa e por ARQUIVO e alimenta o auto-fit; trocar a arte sem
+  // recalcular deixa o auto-fit medindo a silhueta da peca antiga.
   state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
     const c = document.createElement('canvas');
     c.width = w;
@@ -185,24 +183,35 @@ async function onLoadTemplatePart(partName) {
   renderLayersList();
   applyAutoFitScale(true);
   onPreviewTime();
-  log(`Peca "${partName}" substituida por ${path.basename(filePath)}.`, 'ok');
 }
 
-async function onResetTemplatePart(partName) {
-  if (!state.templatePartOverrides) return;
-  state.templatePartOverrides.delete(partName);
-  const p = path.join(state.activeTemplate.detected.vectorPartsDir, partName);
-  state.images.set(partName, await loadImage(p));
-  state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    return c;
-  });
-  renderTemplatePartsList();
-  renderLayersList();
-  applyAutoFitScale(true);
-  onPreviewTime();
+// Troca SO essa peca em state.images (o rig/pose ja estao carregados, nao
+// precisa recarregar o .unitypackage nem o resto da arte).
+//
+// Vale pras DUAS fontes -- template embutido e pasta externa. Ficou um tempo
+// so no template por um motivo que nao se sustentava: "voltar ao padrao"
+// precisa de uma pasta de origem pra reler o arquivo, e so o template tinha
+// uma guardada. A pasta externa tem a dela tambem (state.artSourceDir), e e
+// justamente ali que trocar Sword por Axe interessa.
+//
+// A troca e so em memoria: nada e escrito na pasta do personagem, e o bake
+// usa a arte que esta carregada. Recarregar o personagem volta tudo ao disco.
+async function onSwapPartArt(partName) {
+  const filePath = await ipcRenderer.invoke('select-image-file');
+  if (!filePath) return;
+  state.partArtOverrides.set(partName, filePath);
+  state.images.set(partName, await loadImageAnyFormat(filePath));
+  refreshAfterArtChange();
+  log(`Peca "${partName}" trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
+}
+
+async function onResetPartArt(partName) {
+  if (!state.artSourceDir) return;
+  state.partArtOverrides.delete(partName);
+  const p = path.join(state.artSourceDir, partName);
+  if (fs.existsSync(p)) state.images.set(partName, await loadImage(p));
+  else state.images.delete(partName);
+  refreshAfterArtChange();
 }
 
 // Corpo compartilhado entre "pasta externa" (onPickPack) e "template
@@ -218,7 +227,12 @@ async function loadFromDetected(detected, displayLabel) {
   state.selectedDampBone = null;
   state.lastPose = null;
   state.savedScale = null;
-  state.templatePartOverrides = new Map();
+  state.partArtOverrides = new Map();
+  state.artSourceDir = detected.vectorPartsDir;
+  state.artPartNames = fs
+    .readdirSync(detected.vectorPartsDir)
+    .filter((f) => f.toLowerCase().endsWith('.png'))
+    .sort();
 
   const scmlText = fs.readFileSync(detected.scmlPath, 'utf8');
   const parsedScml = parseSCML(scmlText);
@@ -679,8 +693,8 @@ function renderLayersList() {
     // "Pecas do template" so sobrou pras variantes que nenhum osso usa).
     const bone = [...state.rig.bones.values()].find((b) => b.name === layer.boneName);
     const pngName = bone && bone.sprite ? bone.sprite.pngName : null;
-    const isCustom = pngName && state.templatePartOverrides && state.templatePartOverrides.has(pngName);
-    const canSwap = !!(state.activeTemplate && pngName);
+    const isCustom = pngName && state.partArtOverrides && state.partArtOverrides.has(pngName);
+    const canSwap = !!(state.artSourceDir && pngName);
 
     row.innerHTML =
       `<span class="layer-handle">&#8942;&#8942;</span>` +
@@ -692,9 +706,9 @@ function renderLayersList() {
 
     row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
     const loadBtn = row.querySelector('[data-action="load"]');
-    if (loadBtn) loadBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onLoadTemplatePart(pngName); });
+    if (loadBtn) loadBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onSwapPartArt(pngName); });
     const resetBtn = row.querySelector('[data-action="reset"]');
-    if (resetBtn) resetBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onResetTemplatePart(pngName); });
+    if (resetBtn) resetBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onResetPartArt(pngName); });
     row.addEventListener('dragstart', (ev) => {
       ev.dataTransfer.effectAllowed = 'move';
       ev.dataTransfer.setData('text/plain', layer.boneName);
