@@ -45,6 +45,21 @@ function pick(value, components) {
   return out;
 }
 
+// Curvas de m_FloatCurves (ex: m_Color.a) guardam value/inSlope/outSlope como
+// NUMERO, nao como {x,y,z} -- por isso nao dao pra passar por sampleCurve.
+function sampleScalarCurve(keys, t) {
+  if (!keys.length) return null;
+  if (t <= keys[0].time) return keys[0].value;
+  const last = keys[keys.length - 1];
+  if (t >= last.time) return last.value;
+
+  let i = 0;
+  while (i < keys.length - 1 && keys[i + 1].time < t) i++;
+  const k0 = keys[i];
+  const k1 = keys[i + 1];
+  return hermite(k0.time, k0.value, k0.outSlope, k1.time, k1.value, k1.inSlope, t);
+}
+
 const POS_COMPONENTS = ['x', 'y', 'z'];
 const ROT_COMPONENTS = ['x', 'y', 'z', 'w'];
 
@@ -69,7 +84,13 @@ function sampleClip(clip, t) {
     if (!out.has(c.path)) out.set(c.path, {});
     out.get(c.path).position = raw;
   }
+  for (const c of clip.alphaCurves || []) {
+    const a = sampleScalarCurve(c.keys, t);
+    if (a === null) continue;
+    if (!out.has(c.path)) out.set(c.path, {});
+    out.get(c.path).alpha = a;
+  }
   return out;
 }
 
-module.exports = { sampleClip, sampleCurve, normalizeQuat };
+module.exports = { sampleClip, sampleCurve, sampleScalarCurve, normalizeQuat };

@@ -91,7 +91,7 @@ function computeAnimatedBounds(rig, clip, pivots, partOffsets, alphaBoxes = null
     const rawPose = computePose(rig, clip, t, null, partOffsets);
     const pose = applyManualOverrides(rawPose, partOffsets);
     for (const item of pose) {
-      if (item.sprite.alpha <= 0) continue;
+      if (itemAlpha(item) <= 0) continue;
       const filePivot = pivots.get(item.sprite.pngName);
       if (!filePivot) continue;
       const pivot = item.pivotOverride ? { ...filePivot, ...item.pivotOverride } : filePivot;
@@ -135,7 +135,15 @@ function computeAnimatedBounds(rig, clip, pivots, partOffsets, alphaBoxes = null
   return { minX, maxX, minY, maxY };
 }
 
-// pose(t) -> array de { zIndex, boneName, world, sprite } ordenado por zIndex
+// Alpha efetivo do item: o amostrado da curva quando o clip anima a
+// visibilidade da peca, senao o da pose de bind. Poses vindas de computePose
+// sempre trazem item.alpha; o fallback existe so pra nao quebrar se alguem
+// montar um item a mao.
+function itemAlpha(item) {
+  return item.alpha !== undefined ? item.alpha : item.sprite.alpha;
+}
+
+// pose(t) -> array de { zIndex, boneName, world, sprite, alpha } ordenado por zIndex
 // zIndexByName (opcional): Map<nomeDaParte, z_index> vindo do .scml, usado
 // como override porque o m_SortingOrder do Unity vem zerado pra tudo nesses
 // pacotes (ver scml-zorder.js).
@@ -157,11 +165,17 @@ function computePose(rig, clip, t, zIndexByName, partOffsets) {
   for (const bone of rig.bones.values()) {
     if (!bone.sprite || !bone.sprite.pngName) continue;
     const zFromScml = zIndexByName && zIndexByName.get(bone.name);
+    // Alpha ANIMADO (m_FloatCurves de m_Color.a) manda sobre o alpha da pose
+    // de bind. Arma e FX vem com bind alpha 0 no prefab e so existem por
+    // causa dessas curvas -- usar so o bind deixa os dois invisiveis sempre.
+    const sampled = sampledByPath.get(bone.path);
+    const alpha = sampled && sampled.alpha !== undefined ? sampled.alpha : bone.sprite.alpha;
     items.push({
       zIndex: zFromScml !== undefined ? zFromScml : bone.sprite.sortingOrder,
       boneName: bone.name,
       world: worldByTransformId.get(bone.transformId),
       sprite: bone.sprite,
+      alpha,
     });
   }
   items.sort((a, b) => a.zIndex - b.zIndex);
@@ -192,7 +206,7 @@ function computePose(rig, clip, t, zIndexByName, partOffsets) {
 // continuam do tamanho original.
 function drawPose(ctx, pose, images, pivots, origin, scale = 1, selectedBoneName = null) {
   for (const item of pose) {
-    if (item.sprite.alpha <= 0) continue;
+    if (itemAlpha(item) <= 0) continue;
     const img = images.get(item.sprite.pngName);
     const filePivot = pivots.get(item.sprite.pngName);
     if (!img || !filePivot) continue;
@@ -206,7 +220,7 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1, selectedBoneName
     const angleDeg = CONVENTION.invertAngle ? -item.world.angle : item.world.angle;
 
     ctx.save();
-    ctx.globalAlpha = item.sprite.alpha;
+    ctx.globalAlpha = itemAlpha(item);
     ctx.translate(px, py);
     ctx.rotate((angleDeg * Math.PI) / 180);
     ctx.scale(

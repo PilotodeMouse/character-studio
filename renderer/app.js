@@ -131,17 +131,25 @@ async function onPickTemplate() {
   banner(profileBanner, 'ok', `Template embutido carregado: <code>${template.id}</code>. Troque as pecas que quiser abaixo -- as que voce nao trocar usam a arte default do template.`);
   document.getElementById('txt-character-name').value = '';
 
-  document.getElementById('template-parts-section').style.display = 'block';
-  renderTemplatePartsList();
-
+  // renderTemplatePartsList() depende de state.rig (pra saber quais pecas NAO
+  // tem osso) e de templatePartOverrides zerado -- as duas coisas so existem
+  // depois do loadFromDetected, que chama as duas listas no final.
   await loadFromDetected(template.detected, template.id);
 }
 
+// So as pecas do template que NENHUM osso usa (faces alternativas, etc.) --
+// as que tem osso ja aparecem como linha no painel de camadas, com o mesmo
+// botao de trocar arte.
 function renderTemplatePartsList() {
   const el = document.getElementById('template-parts-list');
   el.innerHTML = '';
   if (!state.activeTemplate) return;
-  for (const partName of state.activeTemplate.partNames) {
+  const usedByBones = new Set(
+    [...(state.rig ? state.rig.bones.values() : [])].filter((b) => b.sprite && b.sprite.pngName).map((b) => b.sprite.pngName)
+  );
+  const orphans = state.activeTemplate.partNames.filter((p) => !usedByBones.has(p));
+  document.getElementById('template-parts-section').style.display = orphans.length ? 'block' : 'none';
+  for (const partName of orphans) {
     const isCustom = state.templatePartOverrides && state.templatePartOverrides.has(partName);
     const row = document.createElement('div');
     row.className = 'layer-row';
@@ -174,6 +182,7 @@ async function onLoadTemplatePart(partName) {
     return c;
   });
   renderTemplatePartsList();
+  renderLayersList();
   applyAutoFitScale(true);
   onPreviewTime();
   log(`Peca "${partName}" substituida por ${path.basename(filePath)}.`, 'ok');
@@ -191,6 +200,7 @@ async function onResetTemplatePart(partName) {
     return c;
   });
   renderTemplatePartsList();
+  renderLayersList();
   applyAutoFitScale(true);
   onPreviewTime();
 }
@@ -281,6 +291,7 @@ async function loadFromDetected(detected, displayLabel) {
   applyAutoFitScale();
   onPreviewTime();
   renderLayersList();
+  renderTemplatePartsList();
 }
 
 // Reduz (nunca aumenta) a "Escala do personagem dentro da celula" o quanto
@@ -298,7 +309,18 @@ function applyAutoFitScale(force = false) {
   const cfg = readConfig();
   if (!cfg.idleClip) return;
   const cell = cellSpecFor(cfg.size);
-  const bounds = computeAnimatedBounds(state.rig, cfg.idleClip, state.pivots, state.partOffsets, state.alphaBoxes);
+  // Uniao do alcance de TODOS os clips que vao ser bakeados, nao so do Idle:
+  // o Walk costuma abrir mais os bracos/pernas, e uma escala calculada so
+  // pelo Idle deixa o walk.webp cortado na celula.
+  const clips = [cfg.idleClip, cfg.walkClip].filter(Boolean);
+  const bounds = clips
+    .map((clip) => computeAnimatedBounds(state.rig, clip, state.pivots, state.partOffsets, state.alphaBoxes))
+    .reduce((acc, b) => ({
+      minX: Math.min(acc.minX, b.minX),
+      maxX: Math.max(acc.maxX, b.maxX),
+      minY: Math.min(acc.minY, b.minY),
+      maxY: Math.max(acc.maxY, b.maxY),
+    }));
   const scale = fitScaleForBounds(bounds, cell, 8);
   document.getElementById('num-scale').value = scale.toFixed(3);
 }
@@ -423,15 +445,23 @@ function rowsFor(cfg, kind) {
   ];
 }
 
+// Qual clip o preview esta mostrando. Antes era sempre o Idle, e por isso
+// trocar o "Walk (opcional)" no mapeamento nao mudava nada na tela -- ele so
+// aparecia no .webp bakeado. O seletor "Ver:" escolhe qual dos dois inspecionar.
+function previewBaseClip(cfg) {
+  const want = document.getElementById('preview-sel-anim').value;
+  return want === 'walk' && cfg.walkClip ? cfg.walkClip : cfg.idleClip;
+}
+
 function onPreviewTime() {
   if (!state.rig) return;
   const cfg = readConfig();
-  if (!cfg.idleClip) return;
+  const baseClip = previewBaseClip(cfg);
+  if (!baseClip) return;
   const slider = document.getElementById('preview-time');
-  slider.max = cfg.idleClip.length || 1;
-  const t = parseFloat(slider.value) * (cfg.idleClip.length ? 1 : 1);
-  const clampedT = Math.min(t, cfg.idleClip.length);
-  document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${cfg.idleClip.length.toFixed(2)}s`;
+  slider.max = baseClip.length || 1;
+  const clampedT = Math.min(parseFloat(slider.value), baseClip.length);
+  document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${baseClip.length.toFixed(2)}s`;
 
   // O canvas de preview usa exatamente as mesmas dimensoes e a mesma linha
   // do chao (groundLineY) que o bake de verdade (src/baker.js), assim o que
@@ -470,7 +500,7 @@ function onPreviewTime() {
   // so pra dar pra conferir o alinhamento da arte de costas ANTES de bakear
   // 8 frames as cegas.
   const isNorth = state.previewRow === 'north' && state.imagesBack.size > 0;
-  const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || cfg.idleClip : cfg.idleClip;
+  const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
   const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
 
   const rawPose = computePose(state.rig, previewClip, clampedT, state.zIndexByName, state.partOffsets);
@@ -625,8 +655,28 @@ function renderLayersList() {
     const row = document.createElement('div');
     row.className = 'layer-row' + (state.selectedBone === layer.boneName ? ' selected' : '');
     row.draggable = true;
-    row.innerHTML = `<span class="layer-handle">&#8942;&#8942;</span><span class="layer-name">${layer.boneName}</span>`;
+
+    // A mesma linha serve de camada E de peca: quando a fonte e um template
+    // embutido, ela tambem troca a ARTE dessa peca (a lista separada de
+    // "Pecas do template" so sobrou pras variantes que nenhum osso usa).
+    const bone = [...state.rig.bones.values()].find((b) => b.name === layer.boneName);
+    const pngName = bone && bone.sprite ? bone.sprite.pngName : null;
+    const isCustom = pngName && state.templatePartOverrides && state.templatePartOverrides.has(pngName);
+    const canSwap = !!(state.activeTemplate && pngName);
+
+    row.innerHTML =
+      `<span class="layer-handle">&#8942;&#8942;</span>` +
+      `<span class="layer-name">${layer.boneName}` +
+      (pngName ? `<span class="layer-file">${pngName}${isCustom ? ' (sua arte)' : ''}</span>` : '') +
+      `</span>` +
+      (canSwap ? `<button class="layer-btn" data-action="load" title="Trocar a arte desta peca">Arte</button>` : '') +
+      (canSwap && isCustom ? `<button class="layer-btn" data-action="reset" title="Voltar pra arte default do template">&#8634;</button>` : '');
+
     row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
+    const loadBtn = row.querySelector('[data-action="load"]');
+    if (loadBtn) loadBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onLoadTemplatePart(pngName); });
+    const resetBtn = row.querySelector('[data-action="reset"]');
+    if (resetBtn) resetBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onResetTemplatePart(pngName); });
     row.addEventListener('dragstart', (ev) => {
       ev.dataTransfer.effectAllowed = 'move';
       ev.dataTransfer.setData('text/plain', layer.boneName);
@@ -677,7 +727,7 @@ function hitTestCraftpixPart(xLocal, yLocal, pose) {
   for (let i = pose.length - 1; i >= 0; i--) {
     const item = pose[i];
     const pivot = state.pivots.get(item.sprite.pngName);
-    if (!pivot || item.sprite.alpha <= 0) continue;
+    if (!pivot || (item.alpha !== undefined ? item.alpha : item.sprite.alpha) <= 0) continue;
     const w = pivot.width;
     const h = pivot.height;
     const px = item.world.x + state.lastOrigin.x;
@@ -945,6 +995,14 @@ document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
 document.getElementById('sel-anim-idle').addEventListener('change', onPreviewTime);
+document.getElementById('sel-anim-walk').addEventListener('change', () => {
+  applyAutoFitScale(true); // walk entra na conta do auto-fit junto com o idle
+  onPreviewTime();
+});
+document.getElementById('preview-sel-anim').addEventListener('change', () => {
+  document.getElementById('preview-time').value = 0;
+  onPreviewTime();
+});
 document.getElementById('sel-size').addEventListener('change', () => {
   applyAutoFitScale(true); // celula mudou: reencaixa mesmo que houvesse escala salva
   onPreviewTime();
@@ -1092,7 +1150,8 @@ createPlayback({
   playButtonEl: document.getElementById('preview-btn-play'),
   getMax: () => {
     const cfg = readConfig();
-    return cfg.idleClip ? cfg.idleClip.length : 1;
+    const clip = previewBaseClip(cfg);
+    return clip ? clip.length : 1;
   },
   onTick: onPreviewTime,
   getSpeed: () => parseFloat(document.getElementById('preview-sel-speed').value) || 1,

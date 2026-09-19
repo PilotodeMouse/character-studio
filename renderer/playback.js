@@ -5,6 +5,13 @@ function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick
   let playing = false;
   let rafId = null;
   let lastTs = null;
+  // O tempo corrente vive AQUI, nao no <input type=range>. O slider tem
+  // step=0.01, e escrever nele quantiza o valor: em 0.25x cada frame avanca
+  // ~0.004s e em 0.1x ~0.0016s, ambos abaixo do passo -- o valor voltava
+  // arredondado pro mesmo lugar a cada frame e a animacao ficava congelada
+  // (so 1x "funcionava", porque 0.016s/frame passa de 0.01). O slider agora
+  // so exibe; quem manda no tempo e esta variavel.
+  let time = parseFloat(sliderEl.value) || 0;
 
   function tick(ts) {
     if (!playing) return;
@@ -14,16 +21,16 @@ function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick
     lastTs = ts;
 
     const max = getMax();
-    let v = parseFloat(sliderEl.value) + dt;
-    if (v > max) {
+    time += dt;
+    if (time > max) {
       if (loopCheckboxEl.checked) {
-        v = max > 0 ? v % max : 0;
+        time = max > 0 ? time % max : 0;
       } else {
-        v = max;
+        time = max;
         stop();
       }
     }
-    sliderEl.value = v;
+    sliderEl.value = time;
     onTick();
     if (playing) rafId = requestAnimationFrame(tick);
   }
@@ -44,7 +51,9 @@ function createPlayback({ sliderEl, loopCheckboxEl, playButtonEl, getMax, onTick
   }
 
   playButtonEl.addEventListener('click', () => (playing ? stop() : play()));
+  // Arrastar o slider a mao vira a nova fonte do tempo (e pausa).
   sliderEl.addEventListener('input', () => {
+    time = parseFloat(sliderEl.value) || 0;
     if (playing) stop();
   });
 

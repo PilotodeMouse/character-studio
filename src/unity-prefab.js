@@ -115,6 +115,19 @@ function buildRig(prefabAssetText, guidToPathname) {
         path: c.path,
         keys: c.curve.m_Curve.map((k) => ({ time: k.time, value: k.value, inSlope: k.inSlope, outSlope: k.outSlope })),
       })),
+      // Visibilidade de arma/FX vive aqui, NAO na pose de bind: o
+      // SpriteRenderer de Sword/SlashFX costuma vir com m_Color.a = 0 no
+      // prefab, e quem liga/desliga a peca por clip e uma curva de
+      // m_Color.a. Sem ler isto, espada e efeito de corte ficam invisiveis
+      // em TODAS as animacoes (a espada tem alpha 1 o clip inteiro no
+      // Slashing, mas o bind dizia 0). Os valores sao escalares, nao
+      // vetores -- ver sampleScalarCurve em unity-clip-sampler.js.
+      alphaCurves: (d.data.m_FloatCurves || [])
+        .filter((c) => c.attribute === 'm_Color.a')
+        .map((c) => ({
+          path: c.path,
+          keys: c.curve.m_Curve.map((k) => ({ time: k.time, value: k.value, inSlope: k.inSlope, outSlope: k.outSlope })),
+        })),
     }));
 
   return { bones: bonesByTransformId, root, nameIndex, clips, pixelsPerUnit: PIXELS_PER_UNIT };

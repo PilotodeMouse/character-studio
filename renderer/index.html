@@ -122,7 +122,15 @@
   #tpl-preview-canvas, #preview-canvas { cursor: grab; }
   #tpl-preview-canvas.dragging, #preview-canvas.dragging { cursor: grabbing; }
 
-  #layers-list { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+  #rightbar {
+    width: 300px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #layers-list { display: flex; flex-direction: column; gap: 3px; }
+  .layer-row .layer-file { color: var(--muted); font-size: 10px; display: block; }
   .layer-row {
     display: flex; align-items: center; gap: 6px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
@@ -177,14 +185,6 @@
         <div id="pack-info" style="margin-top:8px; color: var(--muted);"></div>
       </div>
 
-      <div id="template-parts-section" class="card" style="display:none">
-        <h2 style="margin-top:0;">Pecas do template (troque so as que quiser)</h2>
-        <div style="color:var(--muted); font-size:11px; margin-bottom:8px;">
-          PNG ou SVG -- qualquer tamanho, a peca sempre desenha no tamanho definido pelo rig. A que voce nao trocar usa a arte default do template.
-        </div>
-        <div id="template-parts-list"></div>
-      </div>
-
       <div id="config-section" style="display:none">
         <div id="profile-banner"></div>
         <div id="rig-banner"></div>
@@ -197,7 +197,7 @@
 
         <label class="checkbox-row">
           <input type="checkbox" id="chk-has-north" />
-          Usar uma animacao diferente para NORTH (raro)
+          Usar uma animacao diferente para NORTH
         </label>
         <select id="sel-anim-north" disabled><option value="">(usa a mesma pose de EAST)</option></select>
         <div style="color:var(--muted); font-size:11px; margin-top:4px;">
@@ -240,12 +240,9 @@
         <label>Nome do personagem (pasta de saida)</label>
         <input type="text" id="txt-character-name" />
 
-        <h2>Camadas (clique pra selecionar, ↑/↓ reordena)</h2>
-        <div id="layers-list"></div>
-
         <h2>Ajuste manual por peca (nao mexe na animacao, so corrige)</h2>
         <div style="color:var(--muted); font-size:11px; margin-bottom:6px;">
-          Clique numa peca no preview ou na lista de camadas, arraste no preview pra mover. O ajuste fica salvo por rig -- outros personagens da mesma serie herdam.
+          Clique numa peca no preview ou no painel de camadas (a direita), arraste no preview pra mover. O ajuste fica salvo por rig -- outros personagens da mesma serie herdam.
         </div>
         <div id="sel-part-name" style="color:var(--muted); margin-bottom:6px;">(nenhuma peca selecionada)</div>
         <div class="row">
@@ -410,6 +407,10 @@
           <option value="dadada">Solido #dadada</option>
         </select>
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="preview-chk-guides" checked /> Guias do VTT</label>
+        <select id="preview-sel-anim" style="flex:0 0 110px;">
+          <option value="idle">Ver: Idle</option>
+          <option value="walk">Ver: Walk</option>
+        </select>
         <select id="preview-sel-row" style="flex:0 0 110px; display:none;">
           <option value="east" selected>Ver: East</option>
           <option value="north">Ver: North (costas)</option>
@@ -479,6 +480,25 @@
       </div>
     </div>
     <div id="tpl-canvases"></div>
+  </div>
+
+  <!-- Painel de camadas/pecas, a direita (estilo editor grafico). Uma linha
+       por peca do rig, na ordem de desenho; quando a fonte e um template
+       embutido, a mesma linha tambem troca a ARTE daquela peca. -->
+  <div id="rightbar">
+    <h2 style="margin-top:0;">Camadas</h2>
+    <div style="color:var(--muted); font-size:11px; margin-bottom:8px;">
+      Frente no topo. Arraste pra reordenar, clique no nome pra selecionar.
+    </div>
+    <div id="layers-list"></div>
+
+    <div id="template-parts-section" style="display:none; margin-top:16px;">
+      <h2 style="margin-top:0;">Variantes (sem camada propria)</h2>
+      <div style="color:var(--muted); font-size:11px; margin-bottom:8px;">
+        Pecas do template que nenhum osso usa direto (faces alternativas, por exemplo).
+      </div>
+      <div id="template-parts-list"></div>
+    </div>
   </div>
 
   <script src="playback.js"></script>
