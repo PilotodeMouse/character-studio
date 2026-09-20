@@ -1,6 +1,5 @@
 node_modules/
-scratch-*.png
-scratch-*.webp
+scratch-*
 scratch-bake-out/
 *.log
 Claude outputs/
