@@ -135,9 +135,14 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
 
 - `state.partOffsetsByRow` tem as 4; `state.partOffsets` e um getter/setter pro mapa da direcao em edicao
   (`state.previewRow`), entao arrastar/camadas/pivo/z-order/escala continuam iguais e valem so pra ela.
-- `state.images` e a arte BASE (EAST, direto da Vector Parts). `state.rowArt = {north, south, west}` guarda
-  overrides PARCIAIS que se sobrepoem peca a peca (`imagesForRow`/`mergeImagesForRow`). `hideFace` tira as
-  pecas `Face*` so nas direcoes que mostram as costas.
+- A ARTE e INDEPENDENTE por direcao; so a POSE e que uma direcao espelhada herda da fonte. `state.images` e
+  a base crua da Vector Parts e `state.rowArt[row]` (as QUATRO, EAST inclusive) poe por cima, peca a peca --
+  `imagesForDisplayRow(row, clip)` empilha base -> rowArt[row] -> clipArt[row][clip], sem olhar a fonte.
+  Motivo: trocar o escudo no EAST trocava tambem no SOUTH, e "o back de uma peca nao quer dizer que ela tem
+  de estar com outras pecas back" -- o mesmo escudo pode ser de costas numa direcao e de frente na outra.
+  Defaults por vista: NORTH e WEST (as duas de COSTAS) comecam com a arte `-back`/`Costas` que existir, EAST
+  e SOUTH com a base. `hideFace` tira as pecas `Face*` quando a direcao mostra as costas E a cabeca foi
+  trocada.
 - `state.rowModes = {south, west}`: `'mirror'` (espelho da fonte, sem nada de seu) ou `'own'` (arte e ajustes
   proprios). `setRowMode` para 'own' copia os ajustes da fonte pra comecar igual; carregar arte numa direcao
   espelhada ja a torna propria sozinha. Direcao espelhada nao aceita arrasto (o que se ve ali e a fonte pelo

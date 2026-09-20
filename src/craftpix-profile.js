@@ -42,10 +42,13 @@ const EXTRA_ANIMATIONS = [
 //
 // EAST nao aparece aqui: e a arte base, direto na Vector Parts. As outras
 // tres se sobrepoem a ela peca a peca (ver src/back-art.js).
+// EAST e a arte base (direto na Vector Parts) e por isso nao tem pasta
+// propria. WEST aceita pasta propria e, sem ela, comeca com a arte de costas
+// -- e uma das duas vistas de tras, junto com NORTH.
 const ROW_ART_DIRNAMES = {
   north: ['Back', 'Costas', 'North', 'Norte'],
   south: ['South', 'Sul'],
-  west: ['West', 'Oeste'],
+  west: ['West', 'Oeste', 'Back', 'Costas'],
 };
 
 // Marcas que identificam a direcao no NOME do arquivo, pra quem prefere
@@ -54,7 +57,7 @@ const ROW_ART_DIRNAMES = {
 const ROW_ART_SUFFIXES = {
   north: ['back', 'costas', 'north', 'norte'],
   south: ['south', 'sul'],
-  west: ['west', 'oeste'],
+  west: ['west', 'oeste', 'back', 'costas'],
 };
 
 const BACK_ART_DIRNAMES = ROW_ART_DIRNAMES.north; // compatibilidade

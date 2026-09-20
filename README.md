@@ -54,6 +54,10 @@ nao o tamanho real do PNG -- arte de dimensao diferente sai esticada). `Animatio
 `.unitypackage` nao mudam entre skins, sao o rig compartilhado. Use `scripts/export-part-templates.js` pra
 gerar os guias de canvas/pivo de cada peca antes de desenhar.
 
+A arte e independente por direcao: trocar o escudo no EAST nao mexe no SOUTH, e a mesma peca pode ser de
+costas numa direcao e de frente na outra. NORTH e WEST, que mostram as costas, ja comecam com a arte de
+costas que existir; EAST e SOUTH comecam com a da frente.
+
 Pra arte de uma direcao de verdade (nao espelhada): crie `PNG/Vector Parts/Back/` (ou `Costas/`, `South/`,
 `Sul/`, `West/`, `Oeste/`) com PNGs dos mesmos nomes, ou deixe os arquivos soltos na propria `Vector Parts`
 com o sufixo da direcao (`head-back.png`, `body-south.png`). Pode ser parcial: so as pecas que voce

@@ -225,8 +225,9 @@ function temArteTrocada(pngName) {
 function refreshAfterArtChange() {
   updateRowControls();
   // A caixa alfa e por ARQUIVO e alimenta o auto-fit; trocar a arte sem
-  // recalcular deixa o auto-fit medindo a silhueta da peca antiga.
-  state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
+  // recalcular deixa o auto-fit medindo a silhueta da peca antiga. Mede o que
+  // o EAST desenha de verdade, que e a linha que o auto-fit usa de referencia.
+  state.alphaBoxes = computeAlphaBoxes(imagesForDisplayRow('east'), (w, h) => {
     const c = document.createElement('canvas');
     c.width = w;
     c.height = h;
@@ -277,8 +278,13 @@ function isLimbName(n) {
 const BACK_ROWS = new Set(['north', 'west']);
 
 // Mapa de arte daquela direcao. EAST e a base, as outras sao overrides.
+// A arte de cada direcao e INDEPENDENTE. So a POSE e que uma direcao
+// espelhada herda da fonte -- a arte, nao: trocar o escudo no EAST nao pode
+// trocar no SOUTH, e o mesmo escudo pode ser de costas numa direcao e de
+// frente na outra. `state.images` e a base crua da Vector Parts; cada direcao
+// poe o que quiser por cima (inclusive EAST, que por isso tambem tem gaveta).
 function rowArtMap(row) {
-  return row === 'east' ? state.images : state.rowArt[row];
+  return state.rowArt[row];
 }
 
 // Conjunto de imagens efetivo de uma direcao: a base com os overrides
@@ -292,8 +298,7 @@ function rowArtMap(row) {
 // continuando a ser o espelho de EAST no resto.
 function imagesForDisplayRow(row, clipName = previewClipName()) {
   const src = sourceRowFor(row);
-  const camadas = [state.rowArt[src], clipArtLayer(src, clipName)];
-  if (src !== row) camadas.push(state.rowArt[row], clipArtLayer(row, clipName));
+  const camadas = [state.rowArt[row], clipArtLayer(row, clipName)];
 
   const merged = new Map(state.images);
   let trocouCabeca = false;
@@ -306,7 +311,7 @@ function imagesForDisplayRow(row, clipName = previewClipName()) {
   }
   // De costas nao se ve o rosto: com a cabeca redesenhada, as pecas Face* da
   // frente sairiam por cima dela. Sem imagem, o drawPose pula a peca.
-  if (BACK_ROWS.has(src) && trocouCabeca) {
+  if (BACK_ROWS.has(row) && trocouCabeca) {
     for (const nome of [...merged.keys()]) if (nome.toLowerCase().startsWith('face')) merged.delete(nome);
   }
   return merged;
@@ -447,7 +452,7 @@ async function onSwapPartArt(partName) {
   } else {
     state.partArtOverridesByRow[row].set(partName, filePath);
     rowArtMap(row).set(partName, img);
-    if (row !== 'east') state.rowArtFiles[row].set(partName, arquivo);
+    state.rowArtFiles[row].set(partName, arquivo);
   }
   refreshAfterArtChange();
   log(
@@ -470,21 +475,15 @@ async function onResetPartArt(partName) {
 
   state.partArtOverridesByRow[row].delete(partName);
 
-  if (row === 'east') {
-    // EAST e a arte base: volta direto do arquivo da Vector Parts.
-    const p = path.join(state.artSourceDir, partName);
-    if (fs.existsSync(p)) state.images.set(partName, await loadImage(p));
-    else state.images.delete(partName);
-    refreshAfterArtChange();
-    return;
-  }
-
-  // Nas outras, volta pra arte daquela direcao que veio do disco (se havia);
-  // sem ela, a peca simplesmente cai pra base de novo.
+  // Volta pra arte que aquela direcao tinha vindo do disco (se havia); sem
+  // ela, a peca cai pra base da Vector Parts de novo. EAST nao tem sufixo
+  // proprio, entao cai direto pra base -- que e o certo.
   state.rowArt[row].delete(partName);
   state.rowArtFiles[row].delete(partName);
   for (const [dir, requireSuffix] of state.rowArtSources[row] || []) {
-    const file = matchRowArtFiles(fs.readdirSync(dir), [partName], ROW_ART_SUFFIXES[row], requireSuffix).get(partName);
+    const sufixos = ROW_ART_SUFFIXES[row] || [];
+    if (!sufixos.length) break;
+    const file = matchRowArtFiles(fs.readdirSync(dir), [partName], sufixos, requireSuffix).get(partName);
     if (file) {
       state.rowArt[row].set(partName, await loadImage(path.join(dir, file)));
       state.rowArtFiles[row].set(partName, file);
@@ -544,16 +543,21 @@ async function loadFromDetected(detected, displayLabel) {
   // existirem sao substituidas -- ver src/back-art.js e src/craftpix-profile.js.
   // Cada direcao aceita uma subpasta propria (Back/Costas, South/Sul,
   // West/Oeste) ou arquivos marcados soltos na Vector Parts ("*-back.png").
-  state.rowArt = { north: new Map(), south: new Map(), west: new Map() };
-  state.rowArtFiles = { north: new Map(), south: new Map(), west: new Map() };
-  state.rowArtSources = { north: [], south: [], west: [] };
-  for (const row of ['north', 'south', 'west']) {
+  state.rowArt = Object.fromEntries(ROWS.map((r) => [r, new Map()]));
+  state.rowArtFiles = Object.fromEntries(ROWS.map((r) => [r, new Map()]));
+  state.rowArtSources = Object.fromEntries(ROWS.map((r) => [r, []]));
+  for (const row of ROWS) {
     const sources = state.rowArtSources[row];
     const dir = detected.rowArtDirs && detected.rowArtDirs[row];
     if (dir) sources.push([dir, false]);
     sources.push([detected.vectorPartsDir, true]);
+    // NORTH e WEST sao as duas vistas de COSTAS, entao ambas comecam com a
+    // arte "-back" que existir. Dali em diante cada uma anda por si -- o
+    // usuario pode, por exemplo, deixar o escudo de frente so no WEST.
+    const sufixos = ROW_ART_SUFFIXES[row] || [];
+    if (!sufixos.length) continue;
     for (const [from, requireSuffix] of sources) {
-      const matches = matchRowArtFiles(fs.readdirSync(from), [...state.pivots.keys()], ROW_ART_SUFFIXES[row], requireSuffix);
+      const matches = matchRowArtFiles(fs.readdirSync(from), [...state.pivots.keys()], sufixos, requireSuffix);
       for (const [part, file] of matches) {
         if (state.rowArt[row].has(part)) continue;
         state.rowArt[row].set(part, await loadImage(path.join(from, file)));
@@ -609,8 +613,7 @@ async function loadFromDetected(detected, displayLabel) {
 
   document.getElementById('pack-info').textContent =
     `${displayLabel} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
-    ['north', 'south', 'west']
-      .filter((r) => state.rowArt[r].size)
+    ROWS.filter((r) => state.rowArt[r].size)
       .map((r) => `, ${state.rowArt[r].size} PNGs de ${r.toUpperCase()}`)
       .join('');
   document.getElementById('config-section').style.display = 'block';
@@ -861,12 +864,12 @@ function rowsFor(cfg, kind) {
 
   return deliveredRows().map((row) => {
     const src = sourceRowFor(row);
-    const ownArt = src === 'east' || state.rowArt[src].size > 0;
+    const ownArt = row === 'east' || state.rowArt[row].size > 0;
     return {
       row,
       clip: clipFor[src],
       hasArt: ownArt,
-      images: imagesForDisplayRow(row),
+      images: imagesForDisplayRow(row, clipFor[src].name),
       // sem arte propria a linha e so a pose de EAST -> usa os ajustes de EAST
       partOffsets: ownArt ? effectiveOffsets(row, clipFor[src].name) : effectiveOffsets('east', clipFor.east.name),
       handTransplants: handTransplantsFor(row),
@@ -1017,7 +1020,7 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   const showsBack = BACK_ROWS.has(src);
   const previewClip = showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
   const offsets = effectiveOffsets(row, previewClip.name);
-  const previewImages = imagesForDisplayRow(row);
+  const previewImages = imagesForDisplayRow(row, previewClip.name);
 
   const rawPose = computePoseFn(previewClip, clampedT, offsets);
   let pose = applyManualOverrides(rawPose, offsets);
@@ -1294,14 +1297,8 @@ function currentLayers(offsets = state.partOffsets) {
 // trocar Sword por Axe (ou Shield por shield-back), a linha tem que dizer o
 // arquivo de verdade -- senao nao da pra saber o que esta montado.
 function artFileInUse(pngName, row = state.previewRow, clipName = previewClipName()) {
-  const src = sourceRowFor(row);
-  // Da camada mais especifica pra mais geral -- vence a primeira que tiver.
-  const candidatos = [
-    src !== row ? clipArtLayer(row, clipName).get(pngName) : null,
-    src !== row ? nomeDaArteGeral(row, pngName) : null,
-    clipArtLayer(src, clipName).get(pngName),
-    nomeDaArteGeral(src, pngName),
-  ];
+  // Da camada mais especifica pra mais geral, dentro da PROPRIA direcao.
+  const candidatos = [clipArtLayer(row, clipName).get(pngName), nomeDaArteGeral(row, pngName)];
   for (const c of candidatos) {
     if (!c) continue;
     const nome = typeof c === 'string' ? c : c.file;
@@ -1396,11 +1393,8 @@ async function applyRowDefaults(defaults) {
     for (const [png, arquivo] of Object.entries(def.art || {})) {
       const achado = await carregarArtePorNome(arquivo);
       if (!achado) continue;
-      if (row === 'east') state.images.set(png, achado.img);
-      else {
-        state.rowArt[row].set(png, achado.img);
-        state.rowArtFiles[row].set(png, arquivo);
-      }
+      state.rowArt[row].set(png, achado.img);
+      state.rowArtFiles[row].set(png, arquivo);
       state.partArtOverridesByRow[row].set(png, achado.caminho);
       pecas++;
     }
