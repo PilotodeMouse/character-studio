@@ -14,7 +14,7 @@ const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
 const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeAlphaBoxes } = require('../src/alpha-bounds');
-const { mergeImagesForRow } = require('../src/back-art');
+const { mergeImagesForRow, matchBackFiles } = require('../src/back-art');
 const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
 const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
@@ -36,8 +36,21 @@ let state = {
   zIndexByName: new Map(),
   rigId: null,
   outputFolder: null,
-  partOffsets: new Map(), // boneName -> {dx,dy,dangle}, correcao manual do usuario
+  // Ajustes manuais INDEPENDENTES por vista: mexer no NORTH (costas) nao pode
+  // desmontar o EAST e vice-versa. `partOffsets` e so um atalho pro mapa da
+  // vista que esta sendo editada (state.previewRow), entao todo o codigo de
+  // arrastar/camadas/pivo continua igual e passa a valer so pra vista ativa.
+  partOffsetsByRow: { east: new Map(), north: new Map() }, // boneName -> {dx,dy,dangle,...}
+  get partOffsets() {
+    return this.partOffsetsByRow[this.previewRow === 'north' ? 'north' : 'east'];
+  },
+  set partOffsets(m) {
+    this.partOffsetsByRow[this.previewRow === 'north' ? 'north' : 'east'] = m;
+  },
   selectedBone: null,
+  multiSel: new Set(), // selecao multipla (Shift): sempre contem selectedBone quando ha selecao
+  undoStack: [],
+  redoStack: [],
   lastPose: null,
   lastOrigin: null,
   lastCfg: null,
@@ -57,6 +70,7 @@ let state = {
   // que permite o botao "voltar ao padrao" reler o arquivo do disco.
   artSourceDir: null,
   artPartNames: [], // todos os PNGs da pasta de origem (inclusive os que nenhum osso usa)
+  partArtOverridesBack: new Map(), // idem, mas da arte de COSTAS (state.imagesBack)
   partArtOverrides: new Map(), // partName -> caminho escolhido pelo usuario, so pra UI/status (a peca em si ja vive em state.images)
 };
 
@@ -160,7 +174,7 @@ function renderTemplatePartsList() {
   const orphans = state.artPartNames.filter((p) => !usedByBones.has(p));
   document.getElementById('template-parts-section').style.display = orphans.length ? 'block' : 'none';
   for (const partName of orphans) {
-    const isCustom = state.partArtOverrides && state.partArtOverrides.has(partName);
+    const isCustom = artOverridesForView().has(partName);
     const row = document.createElement('div');
     row.className = 'layer-row';
     row.innerHTML =
@@ -175,7 +189,13 @@ function renderTemplatePartsList() {
   }
 }
 
+// Quais trocas de arte valem pra vista que esta sendo editada.
+function artOverridesForView() {
+  return state.previewRow === 'north' ? state.partArtOverridesBack : state.partArtOverrides;
+}
+
 function refreshAfterArtChange() {
+  updateRowControls();
   // A caixa alfa e por ARQUIVO e alimenta o auto-fit; trocar a arte sem
   // recalcular deixa o auto-fit medindo a silhueta da peca antiga.
   state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
@@ -207,14 +227,28 @@ function refreshAfterArtChange() {
 async function onSwapPartArt(partName) {
   const filePath = await ipcRenderer.invoke('select-image-file');
   if (!filePath) return;
-  state.partArtOverrides.set(partName, filePath);
-  state.images.set(partName, await loadImageAnyFormat(filePath));
+  // Cada vista tem a SUA arte: com NORTH ativo a troca vai pra arte de costas,
+  // com EAST pra de frente -- uma nao mexe na outra.
+  const north = state.previewRow === 'north';
+  (north ? state.partArtOverridesBack : state.partArtOverrides).set(partName, filePath);
+  (north ? state.imagesBack : state.images).set(partName, await loadImageAnyFormat(filePath));
   refreshAfterArtChange();
-  log(`Peca "${partName}" trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
+  log(`Peca "${partName}" (${north ? 'costas' : 'frente'}) trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
 }
 
 async function onResetPartArt(partName) {
   if (!state.artSourceDir) return;
+  if (state.previewRow === 'north') {
+    state.partArtOverridesBack.delete(partName);
+    state.imagesBack.delete(partName);
+    // volta pra arte de costas do disco (se existia), senao cai pra da frente
+    for (const [dir, requireSuffix] of state.backSources || []) {
+      const file = matchBackFiles(fs.readdirSync(dir), [partName], requireSuffix).get(partName);
+      if (file) { state.imagesBack.set(partName, await loadImage(path.join(dir, file))); break; }
+    }
+    refreshAfterArtChange();
+    return;
+  }
   state.partArtOverrides.delete(partName);
   const p = path.join(state.artSourceDir, partName);
   if (fs.existsSync(p)) state.images.set(partName, await loadImage(p));
@@ -230,16 +264,22 @@ async function loadFromDetected(detected, displayLabel) {
   // personagem que estava aberto continuavam vivos no state e desmontavam o
   // proximo a ser importado -- os offsets sao em pixels da arte de UM
   // personagem, nao tem sentido nenhum no outro.
-  state.partOffsets = new Map();
+  state.partOffsetsByRow = { east: new Map(), north: new Map() };
+  state.undoStack = [];
+  state.redoStack = [];
+  state.multiSel = new Set();
   state.selectedBone = null;
   state.selectedDampBone = null;
   state.lastPose = null;
   state.savedScale = null;
   state.partArtOverrides = new Map();
+  state.partArtOverridesBack = new Map();
   state.artSourceDir = detected.vectorPartsDir;
   state.artPartNames = fs
     .readdirSync(detected.vectorPartsDir)
     .filter((f) => f.toLowerCase().endsWith('.png'))
+    // arte de costas solta na Vector Parts ("*-back.png") nao e variante da frente
+    .filter((f) => !/[-_ ]?(back|costas)\.png$/i.test(f))
     .sort();
 
   const scmlText = fs.readFileSync(detected.scmlPath, 'utf8');
@@ -263,10 +303,16 @@ async function loadFromDetected(detected, displayLabel) {
   // da frente (mesmo pivo/dimensao do .scml), e so as pecas que existirem la
   // dentro sao substituidas -- ver src/back-art.js e src/craftpix-profile.js.
   state.imagesBack = new Map();
-  if (detected.backArtDir) {
-    for (const name of state.pivots.keys()) {
-      const p = path.join(detected.backArtDir, name);
-      if (fs.existsSync(p)) state.imagesBack.set(name, await loadImage(p));
+  // Pasta Back/Costas (nomes iguais ou tolerantes) ou arquivos "*-back.png"
+  // soltos na propria Vector Parts.
+  const backSources = [];
+  state.backSources = backSources;
+  if (detected.backArtDir) backSources.push([detected.backArtDir, false]);
+  backSources.push([detected.vectorPartsDir, true]);
+  for (const [dir, requireSuffix] of backSources) {
+    const matches = matchBackFiles(fs.readdirSync(dir), [...state.pivots.keys()], requireSuffix);
+    for (const [part, file] of matches) {
+      if (!state.imagesBack.has(part)) state.imagesBack.set(part, await loadImage(path.join(dir, file)));
     }
   }
 
@@ -323,9 +369,10 @@ async function loadFromDetected(detected, displayLabel) {
 
   // O toggle de preview East/North so faz sentido mostrar quando ha arte de
   // costas de verdade pra olhar -- sem isso, north e sempre identico a east.
-  document.getElementById('preview-sel-row').style.display = state.imagesBack.size ? '' : 'none';
   state.previewRow = 'east';
   document.getElementById('preview-sel-row').value = 'east';
+  document.getElementById('preview-chk-side').checked = state.imagesBack.size > 0;
+  updateRowControls();
 
   const clipNames = state.rig.clips.map((c) => c.name).filter((n) => n !== 'Base');
   const optionsHtml = clipNames.map((n) => `<option value="${n}">${n}</option>`).join('');
@@ -346,6 +393,18 @@ async function loadFromDetected(detected, displayLabel) {
   // valor certo pro campo antes de chegar aqui -- pasta externa usa o nome
   // da pasta, template embutido comeca vazio (o usuario digita).
   applyRigProfileIfKnown();
+
+  // Personagem com arte de costas ja nasce com a profundidade do NORTH
+  // espelhada -- e o que se quer em 100% dos casos, e antes disso a vista de
+  // costas abria com a ordem da frente (escudo/braco por cima do corpo).
+  // So quando o NORTH ainda nao tem ajuste nenhum: se o perfil trouxe algo
+  // salvo, a ordem e do usuario e nao pode ser sobrescrita. O botao continua
+  // ali pra reaplicar, e o Ctrl+Z nao desfaz isso (e o estado inicial).
+  if (state.imagesBack.size && state.partOffsetsByRow.north.size === 0) {
+    applyBackViewDepth(state.partOffsetsByRow.north);
+    log('Vista de costas: profundidade das camadas ja espelhada automaticamente.', 'ok');
+  }
+
   applyAutoFitScale();
   onPreviewTime();
   renderLayersList();
@@ -421,7 +480,10 @@ function applyRigProfileIfKnown() {
   const notes = [];
 
   if (mine) {
-    state.partOffsets = new Map(Object.entries(mine.partOffsets || {}));
+    state.partOffsetsByRow = {
+      east: new Map(Object.entries(mine.partOffsets || {})),
+      north: new Map(Object.entries(mine.partOffsetsNorth || {})),
+    };
     if (mine.scale) {
       state.savedScale = mine.scale;
       document.getElementById('num-scale').value = mine.scale;
@@ -454,7 +516,11 @@ function applyRigProfileIfKnown() {
       const from = document.getElementById('sel-copy-from').value;
       const source = profile.characters[from];
       if (!source) return;
-      state.partOffsets = new Map(Object.entries(source.partOffsets || {}));
+      pushUndo();
+      state.partOffsetsByRow = {
+        east: new Map(Object.entries(source.partOffsets || {})),
+        north: new Map(Object.entries(source.partOffsetsNorth || {})),
+      };
       selectPart(null);
       onPreviewTime();
       log(`Ajustes manuais de "${from}" copiados para este personagem.`, 'warn');
@@ -467,9 +533,9 @@ function applyRigProfileIfKnown() {
 // fallback pra .prefab binario -- ver loadFromDetected). As duas devolvem o
 // mesmo formato de item, entao drawPose/applyManualOverrides/bakeGrid
 // funcionam identicos dali pra frente.
-function computePoseFn(clip, t) {
+function computePoseFn(clip, t, offsets = state.partOffsets) {
   if (state.poseSource === 'scml') return computeScmlPose(clip.animation, t);
-  return computePose(state.rig, clip, t, state.zIndexByName, state.partOffsets);
+  return computePose(state.rig, clip, t, state.zIndexByName, offsets);
 }
 
 function computeBoundsFn(clip) {
@@ -513,8 +579,10 @@ function rowsFor(cfg, kind) {
       clip: northClip,
       hasArt: hasBackArt,
       images: hasBackArt ? mergeImagesForRow(state.images, state.imagesBack) : undefined,
+      // sem arte de costas a linha e so a pose de EAST -> usa os ajustes de EAST
+      partOffsets: hasBackArt ? state.partOffsetsByRow.north : state.partOffsetsByRow.east,
     },
-    { row: 'east', clip: eastClip, hasArt: true },
+    { row: 'east', clip: eastClip, hasArt: true, partOffsets: state.partOffsetsByRow.east },
   ];
 }
 
@@ -529,6 +597,27 @@ function previewBaseClip(cfg) {
   return byName || cfg.idleClip;
 }
 
+// Seletor "Editando" e "Lado a lado" so aparecem quando existe arte de costas.
+function updateRowControls() {
+  const has = state.imagesBack.size > 0;
+  document.getElementById('preview-sel-row').style.display = has ? '' : 'none';
+  document.getElementById('preview-side-label').style.display = has ? '' : 'none';
+  if (!has && state.previewRow === 'north') {
+    state.previewRow = 'east';
+    document.getElementById('preview-sel-row').value = 'east';
+  }
+}
+
+// Troca a vista que os controles (arrastar, camadas, pivo, arte) editam.
+function setEditingRow(row) {
+  if (state.previewRow === row) return;
+  state.previewRow = row;
+  document.getElementById('preview-sel-row').value = row;
+  selectPart(null);
+  renderLayersList();
+  renderTemplatePartsList();
+}
+
 function onPreviewTime() {
   if (!state.rig) return;
   const cfg = readConfig();
@@ -539,12 +628,32 @@ function onPreviewTime() {
   const clampedT = Math.min(parseFloat(slider.value), baseClip.length);
   document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${baseClip.length.toFixed(2)}s`;
 
+  // Com arte de costas, da pra ver NORTH (esquerda) e EAST (direita) juntos.
+  // A vista ativa (state.previewRow) e a que os controles editam e e sempre
+  // desenhada POR ULTIMO -- state.lastPose/lastOrigin/lastCfg (usados pelo
+  // hit-test do mouse) ficam sendo dela.
+  const hasNorth = state.imagesBack.size > 0;
+  const side = hasNorth && document.getElementById('preview-chk-side').checked;
+  const active = hasNorth && state.previewRow === 'north' ? 'north' : 'east';
+  const shown = side ? ['north', 'east'] : [active];
+  const canvasNorth = document.getElementById('preview-canvas-north');
+  const canvasEast = document.getElementById('preview-canvas');
+  canvasNorth.style.display = shown.includes('north') ? '' : 'none';
+  canvasEast.style.display = shown.includes('east') ? '' : 'none';
+  canvasNorth.classList.toggle('active-row', side && active === 'north');
+  canvasEast.classList.toggle('active-row', side && active === 'east');
+  for (const r of [...shown.filter((x) => x !== active), active]) {
+    drawRow(r === 'north' ? canvasNorth : canvasEast, r, cfg, baseClip, clampedT, active);
+  }
+}
+
+// Desenha UMA vista (north ou east) num canvas de preview.
+function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // O canvas de preview usa exatamente as mesmas dimensoes e a mesma linha
   // do chao (groundLineY) que o bake de verdade (src/baker.js), assim o que
   // se ve aqui e o que sai no .webp -- antes o preview usava canvas.height*0.85
   // como aproximacao e ficava um pouco fora do lugar em relacao ao bake real.
   const cell = cellSpecFor(cfg.size);
-  const canvas = document.getElementById('preview-canvas');
   if (canvas.width !== cell.w) canvas.width = cell.w;
   if (canvas.height !== cell.h) canvas.height = cell.h;
   // Zoom e so tamanho de RENDER (CSS) por cima da mesma resolucao interna --
@@ -575,12 +684,13 @@ function onPreviewTime() {
   // sempre desenha as duas linhas (north e east) de qualquer forma. Existe
   // so pra dar pra conferir o alinhamento da arte de costas ANTES de bakear
   // 8 frames as cegas.
-  const isNorth = state.previewRow === 'north' && state.imagesBack.size > 0;
+  const isNorth = row === 'north';
+  const offsets = state.partOffsetsByRow[row];
   const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
   const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
 
-  const rawPose = computePoseFn(previewClip, clampedT);
-  let pose = applyManualOverrides(rawPose, state.partOffsets);
+  const rawPose = computePoseFn(previewClip, clampedT, offsets);
+  let pose = applyManualOverrides(rawPose, offsets);
 
   // "Ocultas": arma e SlashFX ficam com alpha 0 fora dos clips de ataque (o
   // prefab grava 0 no bind e quem acende e uma curva de m_Color.a). Sem isso
@@ -595,7 +705,7 @@ function onPreviewTime() {
   // exatamente como o bakeGrid faz -- assim preview e bake percorrem o mesmo
   // caminho e nao tem como divergirem.
   ctx.save();
-  drawPose(ctx, pose, previewImages, state.pivots, origin, cfg.scale, state.selectedBone);
+  drawPose(ctx, pose, previewImages, state.pivots, origin, cfg.scale, row === active ? state.multiSel : null);
   ctx.restore();
 
   // Guias do padrao VTT, em espaco de pixel BRUTO da celula -- nao entram no
@@ -671,8 +781,89 @@ function onPreviewTime() {
   state.lastCfg = cfg;
 }
 
+// ---- Desfazer / refazer (Ctrl+Z / Ctrl+Y ou Ctrl+Shift+Z) -----------------
+// Guarda so os AJUSTES DE PECA das duas vistas (posicao, angulo, pivo,
+// z-order, seguir, amortecimento). Troca de arte nao entra: ela nao e
+// "ajuste" e recarregar a peca do disco ja e o desfazer dela.
+const UNDO_LIMIT = 100;
+let lastUndoKey = null;
+let lastUndoAt = 0;
+
+function cloneOffsetMap(m) {
+  return new Map([...m].map(([k, v]) => [k, { ...v }]));
+}
+function snapshotOffsets() {
+  return { east: cloneOffsetMap(state.partOffsetsByRow.east), north: cloneOffsetMap(state.partOffsetsByRow.north) };
+}
+
+// Chamar ANTES de mudar os ajustes. `key` agrupa mudancas em sequencia (ex:
+// digitar num campo numerico) numa unica entrada de desfazer.
+function pushUndo(key = null) {
+  const now = Date.now();
+  if (key && key === lastUndoKey && now - lastUndoAt < 1000) {
+    lastUndoAt = now;
+    return;
+  }
+  lastUndoKey = key;
+  lastUndoAt = now;
+  state.undoStack.push(snapshotOffsets());
+  if (state.undoStack.length > UNDO_LIMIT) state.undoStack.shift();
+  state.redoStack = [];
+}
+
+function restoreSnapshot(snap) {
+  state.partOffsetsByRow = { east: cloneOffsetMap(snap.east), north: cloneOffsetMap(snap.north) };
+  lastUndoKey = null;
+  const keep = new Set(state.multiSel);
+  selectPart(state.selectedBone); // reatualiza campos + camadas
+  state.multiSel = keep;
+  renderLayersList();
+  onPreviewTime();
+}
+
+function undo() {
+  if (!state.undoStack.length) return;
+  state.redoStack.push(snapshotOffsets());
+  restoreSnapshot(state.undoStack.pop());
+}
+
+function redo() {
+  if (!state.redoStack.length) return;
+  state.undoStack.push(snapshotOffsets());
+  restoreSnapshot(state.redoStack.pop());
+}
+
+// ---- Selecao multipla (Shift) ------------------------------------------------
+// Shift+clique (no preview ou na lista de camadas) soma/tira uma peca da
+// selecao. Arrastar com varias selecionadas move TODAS pelo mesmo deslocamento
+// -- a distancia entre elas nao muda, entao nao saem do eixo.
+function toggleMultiSelect(boneName) {
+  const set = new Set(state.multiSel);
+  if (state.selectedBone) set.add(state.selectedBone);
+  if (set.has(boneName) && set.size > 1) set.delete(boneName);
+  else set.add(boneName);
+  const primary = set.has(boneName) ? boneName : [...set][0];
+  selectPart(primary);
+  state.multiSel = set;
+  renderLayersList();
+}
+
+// Uma peca que SEGUE outra selecionada ja se move junto com ela (followBone
+// soma o delta do pai) -- mexer nas duas contaria o deslocamento em dobro.
+function followsAnyIn(boneName, set) {
+  const seen = new Set();
+  let cur = (state.partOffsets.get(boneName) || {}).followBone;
+  while (cur && !seen.has(cur)) {
+    if (set.has(cur)) return true;
+    seen.add(cur);
+    cur = (state.partOffsets.get(cur) || {}).followBone;
+  }
+  return false;
+}
+
 function selectPart(boneName) {
   state.selectedBone = boneName;
+  state.multiSel = new Set(boneName ? [boneName] : []);
   document.getElementById('sel-part-name').textContent = boneName || '(nenhuma peca selecionada)';
   const o = state.partOffsets.get(boneName) || { dx: 0, dy: 0, dangle: 0 };
   document.getElementById('part-offset-x').value = o.dx || 0;
@@ -683,6 +874,8 @@ function selectPart(boneName) {
   const filePivot = bone && bone.sprite && state.pivots.get(bone.sprite.pngName);
   document.getElementById('part-pivot-x').value = o.pivotX !== undefined ? o.pivotX : filePivot ? filePivot.pivotX : 0;
   document.getElementById('part-pivot-y').value = o.pivotY !== undefined ? o.pivotY : filePivot ? filePivot.pivotY : 1;
+  document.getElementById('part-scale-x').value = Math.round((o.scaleX ?? 1) * 100);
+  document.getElementById('part-scale-y').value = Math.round((o.scaleY ?? 1) * 100);
 
   const followSel = document.getElementById('part-follow-bone');
   const spriteBoneNames = boneName
@@ -724,11 +917,11 @@ function selectPart(boneName) {
 // manual > z_index do .scml > sortingOrder do Unity). O botao ^/v atribui
 // um zIndex explicito pra trocar de posicao com o vizinho, sem depender do
 // numero "real" do arquivo original.
-function currentLayers() {
+function currentLayers(offsets = state.partOffsets) {
   const bones = [...state.rig.bones.values()].filter((b) => b.sprite && b.sprite.pngName);
   return bones
     .map((b) => {
-      const o = state.partOffsets.get(b.name);
+      const o = offsets.get(b.name);
       const z = o && o.zIndex !== undefined ? o.zIndex : state.zIndexByName.get(b.name) ?? b.sprite.sortingOrder ?? 0;
       return { boneName: b.name, z };
     })
@@ -737,6 +930,8 @@ function currentLayers() {
 
 function renderLayersList() {
   if (!state.rig) return;
+  const mirrorBtn = document.getElementById('btn-mirror-depth');
+  mirrorBtn.style.display = state.previewRow === 'north' && state.imagesBack.size ? '' : 'none';
   const layers = currentLayers();
   const el = document.getElementById('layers-list');
   el.innerHTML = '';
@@ -744,7 +939,7 @@ function renderLayersList() {
   for (let i = layers.length - 1; i >= 0; i--) {
     const layer = layers[i];
     const row = document.createElement('div');
-    row.className = 'layer-row' + (state.selectedBone === layer.boneName ? ' selected' : '');
+    row.className = 'layer-row' + (state.multiSel.has(layer.boneName) ? ' selected' : '');
     row.draggable = true;
 
     // A mesma linha serve de camada E de peca: quando a fonte e um template
@@ -752,7 +947,7 @@ function renderLayersList() {
     // "Pecas do template" so sobrou pras variantes que nenhum osso usa).
     const bone = [...state.rig.bones.values()].find((b) => b.name === layer.boneName);
     const pngName = bone && bone.sprite ? bone.sprite.pngName : null;
-    const isCustom = pngName && state.partArtOverrides && state.partArtOverrides.has(pngName);
+    const isCustom = pngName && artOverridesForView().has(pngName);
     const canSwap = !!(state.artSourceDir && pngName);
 
     row.innerHTML =
@@ -763,7 +958,10 @@ function renderLayersList() {
       (canSwap ? `<button class="layer-btn" data-action="load" title="Trocar a arte desta peca">Arte</button>` : '') +
       (canSwap && isCustom ? `<button class="layer-btn" data-action="reset" title="Voltar pra arte default do template">&#8634;</button>` : '');
 
-    row.querySelector('.layer-name').addEventListener('click', () => selectPart(layer.boneName));
+    row.querySelector('.layer-name').addEventListener('click', (ev) => {
+      if (ev.shiftKey) toggleMultiSelect(layer.boneName);
+      else selectPart(layer.boneName);
+    });
     const loadBtn = row.querySelector('[data-action="load"]');
     if (loadBtn) loadBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onSwapPartArt(pngName); });
     const resetBtn = row.querySelector('[data-action="reset"]');
@@ -792,6 +990,60 @@ function renderLayersList() {
   }
 }
 
+// De costas, a profundidade inverte: o que estava ENTRE a camera e o corpo
+// (braco/mao do lado de ca, escudo) passa pra tras dele, e o que estava
+// escondido atras (o outro braco, a espada) vem pra frente. Cabeca e rosto
+// sao excecao -- ficam em cima do corpo nas duas vistas, porque nao estao
+// atras dele em profundidade, so por cima na vertical.
+//
+// So mexe nos zIndex da vista de COSTAS (state.partOffsets ja aponta pra ela
+// quando NORTH esta em edicao), entao o EAST nao muda. Ctrl+Z desfaz.
+function backViewDepthOrder(layers) {
+  const isHeadish = (n) => /^(head|face)/i.test(n);
+  const isLeg = (n) => /leg/i.test(n);
+  const bodyIdx = layers.findIndex((n) => /^body/i.test(n));
+  let ordered;
+  if (bodyIdx === -1) {
+    ordered = [...layers.filter((n) => !isHeadish(n)).reverse(), ...layers.filter(isHeadish)];
+  } else {
+    const body = layers[bodyIdx];
+    const movable = (n) => !isHeadish(n) && !isLeg(n) && n !== body;
+    // O que estava ATRAS do corpo vem pra frente e vice-versa, cada bloco
+    // (braco + mao + o que ela segura) trocando de lado inteiro.
+    //
+    // Dentro do bloco, o que e SEGURADO vai pro fundo: de costas o membro
+    // fica entre a camera e o objeto. De frente o escudo cobre o braco (a
+    // face dele aponta pra camera); de costas e o braco que cobre o escudo.
+    // Vale pra arma tambem -- a mao aparece por cima do punho.
+    const isHeldItem = (n) => !/\b(arm|hand|leg|foot|body|torso|hip|neck|head|face)\b/i.test(n);
+    const itemsToBack = (block) => [...block.filter(isHeldItem), ...block.filter((n) => !isHeldItem(n))];
+    const wasBehind = itemsToBack(layers.slice(0, bodyIdx).filter(movable));
+    const wasInFront = itemsToBack(layers.slice(bodyIdx + 1).filter(movable));
+    // pernas trocam de lado entre si, mas continuam ATRAS do corpo: elas nao
+    // estao atras dele em profundidade, so por baixo na vertical (a saia do
+    // corpo cobre o topo das pernas tanto de frente quanto de costas)
+    const legs = layers.filter(isLeg).reverse();
+    ordered = [...wasInFront, ...legs, body, ...layers.filter(isHeadish), ...wasBehind];
+  }
+  return ordered;
+}
+
+// Grava a ordem espelhada como zIndex explicito no mapa de ajustes de `offsets`.
+function applyBackViewDepth(offsets) {
+  const ordered = backViewDepthOrder(currentLayers(offsets).map((l) => l.boneName));
+  ordered.forEach((name, i) => {
+    offsets.set(name, { ...(offsets.get(name) || {}), zIndex: i });
+  });
+}
+
+function mirrorDepthForBackView() {
+  pushUndo();
+  applyBackViewDepth(state.partOffsets);
+  renderLayersList();
+  onPreviewTime();
+  log('Ordem de camadas do NORTH espelhada em profundidade (o EAST nao mudou).', 'ok');
+}
+
 // draggedBone e solto sobre targetBone; after decide se ele entra antes ou
 // depois do alvo na lista (exibida de frente/topo pra fundo). Reatribui
 // zIndex inteiro sequencial pra todo mundo, igual o antigo botao ^/v fazia.
@@ -805,6 +1057,7 @@ function reorderLayers(draggedBone, targetBone, after) {
   if (toIdx === -1) return;
   if (after) toIdx += 1;
   displayed.splice(toIdx, 0, draggedBone);
+  pushUndo();
   const backToFront = [...displayed].reverse();
   backToFront.forEach((name, i) => {
     const existing = state.partOffsets.get(name) || {};
@@ -832,7 +1085,15 @@ function hitTestCraftpixPart(xLocal, yLocal, pose) {
     const localY = dx * sin + dy * cos;
     const offsetX = -pivot.pivotX * w;
     const offsetY = -(1 - pivot.pivotY) * h; // mesma convencao do drawPose -- ver unity-skeleton.js
-    if (localX >= offsetX && localX <= offsetX + w && localY >= offsetY && localY <= offsetY + h) {
+    // mesma escala/flip que o drawPose aplica, senao a area clicavel de uma
+    // peca redimensionada fica do tamanho antigo
+    const sx = item.world.scaleX * (item.sprite.flipX ? -1 : 1) || 1;
+    const sy = item.world.scaleY * (item.sprite.flipY ? -1 : 1) || 1;
+    const x0 = Math.min(offsetX * sx, (offsetX + w) * sx);
+    const x1 = Math.max(offsetX * sx, (offsetX + w) * sx);
+    const y0 = Math.min(offsetY * sy, (offsetY + h) * sy);
+    const y1 = Math.max(offsetY * sy, (offsetY + h) * sy);
+    if (localX >= x0 && localX <= x1 && localY >= y0 && localY <= y1) {
       return item.boneName;
     }
   }
@@ -840,7 +1101,7 @@ function hitTestCraftpixPart(xLocal, yLocal, pose) {
 }
 
 function canvasEventToLocalCraftpix(e) {
-  const canvas = document.getElementById('preview-canvas');
+  const canvas = e.currentTarget && e.currentTarget.tagName === 'CANVAS' ? e.currentTarget : dragCanvas || document.getElementById('preview-canvas');
   const rect = canvas.getBoundingClientRect();
   const pxScale = canvas.width / rect.width;
   const mx = (e.clientX - rect.left) * pxScale;
@@ -858,7 +1119,17 @@ function canvasEventToLocalCraftpix(e) {
 // que fica embaixo de outra maior vira uma armadilha (clica pra arrastar A,
 // o hit-test acha B por cima, e o arrasto sai errado). So clique direito
 // re-seleciona pelo que esta sob o cursor.
+let dragCanvas = null; // canvas onde o arrasto comecou (o mousemove vem da window)
+
 function onPreviewCanvasMouseDown(e) {
+  // Clicar na vista que NAO e a ativa so passa a edita-la (e redesenha, pra
+  // lastPose/lastOrigin passarem a ser dela) -- o hit-test roda ja nela.
+  const row = e.currentTarget.dataset.row === 'north' ? 'north' : 'east';
+  if (row !== state.previewRow) {
+    setEditingRow(row);
+    onPreviewTime();
+  }
+  dragCanvas = e.currentTarget;
   if (!state.lastPose) return;
   const { x, y } = canvasEventToLocalCraftpix(e);
 
@@ -873,7 +1144,14 @@ function onPreviewCanvasMouseDown(e) {
   if (e.button !== 0) return;
 
   const hit = hitTestCraftpixPart(x, y, state.lastPose);
-  if (!state.selectedBone) {
+  let shiftToggle = null;
+  if (e.shiftKey) {
+    // Shift so soma/tira pecas da selecao; clicar no vazio nao desmarca nada.
+    if (!hit) return;
+    if (!state.selectedBone) selectPart(hit);
+    else if (state.multiSel.has(hit)) shiftToggle = hit; // tira no mouseup, se nao arrastou
+    else toggleMultiSelect(hit);
+  } else if (!state.selectedBone) {
     if (!hit) return;
     selectPart(hit);
   } else if (!hit) {
@@ -884,8 +1162,15 @@ function onPreviewCanvasMouseDown(e) {
     return;
   }
 
-  document.getElementById('preview-canvas').classList.add('dragging');
-  state.drag = { startX: x, startY: y, start: { ...(state.partOffsets.get(state.selectedBone) || { dx: 0, dy: 0, dangle: 0 }) } };
+  dragCanvas.classList.add('dragging');
+  const group = [...state.multiSel].filter((n) => !followsAnyIn(n, state.multiSel));
+  state.drag = {
+    startX: x,
+    startY: y,
+    starts: new Map(group.map((n) => [n, { ...(state.partOffsets.get(n) || { dx: 0, dy: 0, dangle: 0 }) }])),
+    moved: false,
+    shiftToggle,
+  };
   onPreviewTime();
 }
 
@@ -894,16 +1179,32 @@ function onPreviewCanvasMouseMove(e) {
   const { x, y } = canvasEventToLocalCraftpix(e);
   const dx = x - state.drag.startX;
   const dy = y - state.drag.startY;
-  const o = { ...state.drag.start, dx: (state.drag.start.dx || 0) + dx, dy: (state.drag.start.dy || 0) - dy };
-  state.partOffsets.set(state.selectedBone, o);
-  document.getElementById('part-offset-x').value = o.dx.toFixed(1);
-  document.getElementById('part-offset-y').value = o.dy.toFixed(1);
+  if (!state.drag.moved) {
+    if (Math.abs(dx) + Math.abs(dy) < 1) return; // clique parado nao vira arrasto
+    state.drag.moved = true;
+    pushUndo();
+  }
+  for (const [name, start] of state.drag.starts) {
+    state.partOffsets.set(name, { ...start, dx: (start.dx || 0) + dx, dy: (start.dy || 0) - dy });
+  }
+  const o = state.partOffsets.get(state.selectedBone);
+  if (o) {
+    document.getElementById('part-offset-x').value = (o.dx || 0).toFixed(1);
+    document.getElementById('part-offset-y').value = (o.dy || 0).toFixed(1);
+  }
   onPreviewTime();
 }
 
 function onPreviewCanvasMouseUp() {
+  const d = state.drag;
   state.drag = null;
-  document.getElementById('preview-canvas').classList.remove('dragging');
+  if (d && d.shiftToggle && !d.moved) {
+    // Shift+clique numa peca ja selecionada, sem arrastar: tira ela do grupo.
+    toggleMultiSelect(d.shiftToggle);
+    onPreviewTime();
+  }
+  if (dragCanvas) dragCanvas.classList.remove('dragging');
+  dragCanvas = null;
 }
 
 function clampPercent01(elId) {
@@ -915,6 +1216,7 @@ function clampPercent01(elId) {
 // ligar/trocar o "seguir" nao teleporta a peca, so muda o que ela acompanha
 // dali em diante.
 function setFollowBone(boneName, newFollow) {
+  pushUndo();
   const entry = { dx: 0, dy: 0, dangle: 0, ...(state.partOffsets.get(boneName) || {}) };
   const oldFollow = entry.followBone || null;
   const oldParent = oldFollow ? state.partOffsets.get(oldFollow) || {} : {};
@@ -933,6 +1235,7 @@ function setFollowBone(boneName, newFollow) {
 
 function applyOffsetFieldsToSelected() {
   if (!state.selectedBone) return;
+  pushUndo('fields:' + state.selectedBone);
   const existing = state.partOffsets.get(state.selectedBone) || {};
   state.partOffsets.set(state.selectedBone, {
     ...existing,
@@ -941,6 +1244,8 @@ function applyOffsetFieldsToSelected() {
     dangle: parseFloat(document.getElementById('part-offset-angle').value) || 0,
     pivotX: parseFloat(document.getElementById('part-pivot-x').value),
     pivotY: parseFloat(document.getElementById('part-pivot-y').value),
+    scaleX: (parseFloat(document.getElementById('part-scale-x').value) || 100) / 100,
+    scaleY: (parseFloat(document.getElementById('part-scale-y').value) || 100) / 100,
   });
 
   // O amortecimento grava no osso que REALMENTE anima (state.selectedDampBone,
@@ -1015,7 +1320,7 @@ async function onBakeClick() {
       size: cfg.size,
       scale: cfg.scale,
       originOffset: { x: cfg.offsetX, y: cfg.offsetY },
-      partOffsets: state.partOffsets,
+      partOffsets: state.partOffsetsByRow.east,
       createCanvas: (w, h) => {
         const c = document.createElement('canvas');
         c.width = w;
@@ -1059,7 +1364,8 @@ async function onBakeClick() {
     scale: cfg.scale,
     offsetX: cfg.offsetX,
     offsetY: cfg.offsetY,
-    partOffsets: Object.fromEntries(state.partOffsets),
+    partOffsets: Object.fromEntries(state.partOffsetsByRow.east),
+    partOffsetsNorth: Object.fromEntries(state.partOffsetsByRow.north),
   });
   log(
     `Formato de saida salvo para o rig ${state.rigId.slice(0, 8)} (a serie herda); ajustes manuais salvos so para "${cfg.characterName}".`,
@@ -1113,15 +1419,19 @@ document.getElementById('num-offset-y').addEventListener('input', onPreviewTime)
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
 document.getElementById('preview-sel-bg').addEventListener('change', (e) => {
-  const canvas = document.getElementById('preview-canvas');
-  canvas.classList.toggle('bg-checker', e.target.value === 'checker');
-  canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
+  for (const id of ['preview-canvas', 'preview-canvas-north']) {
+    const canvas = document.getElementById(id);
+    canvas.classList.toggle('bg-checker', e.target.value === 'checker');
+    canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
+  }
 });
 document.getElementById('preview-chk-guides').addEventListener('change', onPreviewTime);
 document.getElementById('preview-sel-row').addEventListener('change', (e) => {
-  state.previewRow = e.target.value;
+  setEditingRow(e.target.value === 'north' ? 'north' : 'east');
   onPreviewTime();
 });
+document.getElementById('preview-chk-side').addEventListener('change', onPreviewTime);
+document.getElementById('btn-mirror-depth').addEventListener('click', mirrorDepthForBackView);
 
 // Encontra a escala que faz a referencia caber inteira dentro da celula sem
 // distorcer a proporcao original (equivalente ao "contain" do CSS), depois
@@ -1216,6 +1526,17 @@ document.getElementById('btn-zoom-reset').addEventListener('click', () => setZoo
 document.getElementById('part-offset-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-y').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-offset-angle').addEventListener('input', applyOffsetFieldsToSelected);
+// Com "Travar" ligado, mexer num eixo copia pro outro -- e o caso comum
+// (peca inteira um pouco grande demais), e evita distorcer a arte sem querer.
+function onScaleFieldInput(e) {
+  if (document.getElementById('part-scale-lock').checked) {
+    const other = e.target.id === 'part-scale-x' ? 'part-scale-y' : 'part-scale-x';
+    document.getElementById(other).value = e.target.value;
+  }
+  applyOffsetFieldsToSelected();
+}
+document.getElementById('part-scale-x').addEventListener('input', onScaleFieldInput);
+document.getElementById('part-scale-y').addEventListener('input', onScaleFieldInput);
 document.getElementById('part-pivot-x').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-pivot-y').addEventListener('input', applyOffsetFieldsToSelected);
 document.getElementById('part-damp-x').addEventListener('input', applyOffsetFieldsToSelected);
@@ -1229,6 +1550,7 @@ document.getElementById('part-follow-bone').addEventListener('change', (e) => {
 });
 document.getElementById('btn-reset-part-offset').addEventListener('click', () => {
   if (!state.selectedBone) return;
+  pushUndo();
   state.partOffsets.delete(state.selectedBone);
   if (state.selectedDampBone && state.selectedDampBone !== state.selectedBone) {
     state.partOffsets.delete(state.selectedDampBone);
@@ -1240,8 +1562,27 @@ document.getElementById('btn-reset-part-offset').addEventListener('click', () =>
 const previewCanvasEl = document.getElementById('preview-canvas');
 previewCanvasEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
 previewCanvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
+const previewCanvasNorthEl = document.getElementById('preview-canvas-north');
+previewCanvasNorthEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
+previewCanvasNorthEl.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousemove', onPreviewCanvasMouseMove);
 window.addEventListener('mouseup', onPreviewCanvasMouseUp);
+
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || !state.rig) return;
+  if (document.getElementById('preview-block').style.display === 'none') return;
+  const t = e.target;
+  // nos campos de texto o Ctrl+Z nativo (desfazer digitacao) continua valendo
+  if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && ['text', 'search'].includes(t.type)))) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    undo();
+  } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+    e.preventDefault();
+    redo();
+  }
+});
 
 createPlayback({
   sliderEl: document.getElementById('preview-time'),

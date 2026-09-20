@@ -93,7 +93,8 @@
   .canvas-block h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); }
   ul.log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   ul.log li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-  .preview-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .preview-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .preview-controls .checkbox-row { white-space: nowrap; }
   .preview-controls input[type=range] { flex: 1; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
   .checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
@@ -119,8 +120,8 @@
     padding: 4px 8px; cursor: grab; font-size: 12px;
   }
   #tpl-part-list .part-chip.used { opacity: .4; }
-  #tpl-preview-canvas, #preview-canvas { cursor: grab; }
-  #tpl-preview-canvas.dragging, #preview-canvas.dragging { cursor: grabbing; }
+  #tpl-preview-canvas, #preview-canvas, #preview-canvas-north { cursor: grab; }
+  #tpl-preview-canvas.dragging, #preview-canvas.dragging, #preview-canvas-north.dragging { cursor: grabbing; }
 
   #rightbar {
     width: 300px;
@@ -153,7 +154,10 @@
     border-radius: 8px;
     margin-bottom: 8px;
   }
-  #preview-canvas.bg-checker {
+  #preview-viewport { display: flex; gap: 12px; align-items: flex-start; }
+  #preview-canvas-north, #preview-canvas { flex: 0 0 auto; }
+  #preview-canvas-north.active-row, #preview-canvas.active-row { outline: 2px solid #5b8cff; outline-offset: 2px; }
+  #preview-canvas.bg-checker, #preview-canvas-north.bg-checker {
     background:
       linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
       linear-gradient(-45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
@@ -161,7 +165,7 @@
       linear-gradient(-45deg, transparent 75%, #2a2d33 75%) 0 0 / 16px 16px;
     background-color: #1a1c20;
   }
-  #preview-canvas.bg-dadada { background: #dadada; }
+  #preview-canvas.bg-dadada, #preview-canvas-north.bg-dadada { background: #dadada; }
 </style>
 </head>
 <body>
@@ -271,6 +275,20 @@
           <div>
             <label>Pivo Y (0-1)</label>
             <input type="number" id="part-pivot-y" value="1" step="0.02" min="0" max="1" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label title="100% = tamanho original do PNG. A peca cresce/encolhe em torno do proprio pivo, entao continua presa no mesmo ponto do rig.">Escala X (%)</label>
+            <input type="number" id="part-scale-x" value="100" step="1" min="1" max="400" />
+          </div>
+          <div>
+            <label title="100% = tamanho original do PNG.">Escala Y (%)</label>
+            <input type="number" id="part-scale-y" value="100" step="1" min="1" max="400" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <label class="checkbox-row" style="margin:0;" title="Mexe nos dois juntos, pra nao distorcer a arte"><input type="checkbox" id="part-scale-lock" checked /> Travar</label>
           </div>
         </div>
         <label>Segue outra peca (mesmo movimento)</label>
@@ -417,10 +435,13 @@
         <label class="checkbox-row" style="margin:0;" title="Arma e efeito de corte tem alpha 0 fora dos clips de ataque; isso mostra as duas em fantasma pra dar pra posicionar a arte">
           <input type="checkbox" id="preview-chk-show-hidden" /> Ocultas
         </label>
-        <select id="preview-sel-row" style="flex:0 0 110px; display:none;">
-          <option value="east" selected>Ver: East</option>
-          <option value="north">Ver: North (costas)</option>
+        <select id="preview-sel-row" style="flex:0 0 150px; display:none;" title="Qual vista os ajustes (arrastar, camadas, pivo, arte) editam. North e East tem ajustes e arte independentes.">
+          <option value="east" selected>Editando: East</option>
+          <option value="north">Editando: North (costas)</option>
         </select>
+        <label id="preview-side-label" class="checkbox-row" style="margin:0; display:none;" title="North a esquerda, East a direita. Clique numa das duas pra editar aquela.">
+          <input type="checkbox" id="preview-chk-side" checked /> Lado a lado
+        </label>
         <span style="flex:1"></span>
         <button id="btn-zoom-out" class="secondary icon" type="button">&minus;</button>
         <button id="btn-zoom-reset" class="secondary icon" type="button" style="min-width:56px;">100%</button>
@@ -428,7 +449,8 @@
       </div>
 
       <div id="preview-viewport">
-        <canvas id="preview-canvas" class="bg-checker" width="256" height="448"></canvas>
+        <canvas id="preview-canvas-north" data-row="north" class="bg-checker" width="256" height="448"></canvas>
+        <canvas id="preview-canvas" data-row="east" class="bg-checker" width="256" height="448"></canvas>
       </div>
 
       <div class="preview-controls">
@@ -495,7 +517,12 @@
     <h2 style="margin-top:0;">Camadas</h2>
     <div style="color:var(--muted); font-size:11px; margin-bottom:8px;">
       Frente no topo. Arraste pra reordenar, clique no nome pra selecionar.
+      Shift+clique soma pecas a selecao (arrastar move todas juntas). Ctrl+Z desfaz.
     </div>
+    <button id="btn-mirror-depth" class="secondary" style="display:none; width:100%; margin-bottom:8px;"
+            title="De costas, o que estava na frente do corpo passa pra tras e vice-versa (bracos, maos, escudo, espada). Cabeca e rosto continuam na frente. Ctrl+Z desfaz.">
+      Espelhar profundidade (vista de costas)
+    </button>
     <div id="layers-list"></div>
 
     <div id="template-parts-section" style="display:none; margin-top:16px;">

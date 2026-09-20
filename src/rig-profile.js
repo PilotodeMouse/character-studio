@@ -113,7 +113,7 @@ class RigProfileStore {
   // Grava preferencias de bake (nivel esqueleto) + ajustes do personagem
   // (nivel personagem) numa tacada so, preservando o que ja estava la para
   // os OUTROS personagens.
-  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, scale, offsetX, offsetY, partOffsets }) {
+  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, scale, offsetX, offsetY, partOffsets, partOffsetsNorth }) {
     const current = this.read(rigId) || { characters: {} };
     const next = {
       version: SCHEMA_VERSION,
@@ -124,7 +124,7 @@ class RigProfileStore {
       characters: { ...current.characters },
     };
     if (characterName) {
-      next.characters[characterName] = { scale, offsetX, offsetY, partOffsets: partOffsets || {} };
+      next.characters[characterName] = { scale, offsetX, offsetY, partOffsets: partOffsets || {}, partOffsetsNorth: partOffsetsNorth || {} };
     }
     fs.writeFileSync(this._pathFor(rigId), JSON.stringify(next, null, 2));
     return next;

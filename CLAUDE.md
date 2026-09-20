@@ -121,3 +121,46 @@ recarrega o `.unitypackage` nem as outras pecas.
 `onPickPack` (pasta externa) e `onPickTemplate` (template embutido) convergem no mesmo
 `loadFromDetected(detected, displayLabel)` logo depois de resolver o `detected` -- se mexer no fluxo de
 carregamento, mexa la, nao em cada um separado.
+
+## North (costas) e East independentes (`renderer/app.js`)
+
+`state.partOffsetsByRow = {east, north}`; `state.partOffsets` e um getter/setter que aponta pro mapa da vista
+em edicao (`state.previewRow`), entao arrastar/camadas/pivo/z-order continuam iguais e valem so pra vista ativa.
+Arte tambem e por vista: com NORTH ativo, "Arte" grava em `state.imagesBack` (`partArtOverridesBack`), com EAST
+em `state.images`. O bake passa `partOffsets` por linha (`rowSpec.partOffsets`) e `computePoseFn(clip, t, offsets)`
+recebe os ajustes da linha (amortecimento). Preview: `#preview-canvas-north` (esq.) + `#preview-canvas` (dir.),
+"Lado a lado" liga os dois; clicar num canvas o torna a vista editada. Perfil salva `partOffsetsNorth`.
+Arte de costas casa por nome tolerante (`matchBackFiles` em `src/back-art.js`: `left-arm-back.png` -> `Left Arm.png`,
+`head-elm-back` -> `Head`), da pasta `Back/Costas` ou solta na `Vector Parts` com sufixo `-back`.
+
+Desfazer/refazer: `pushUndo(key)` (app.js) tira snapshot dos `partOffsetsByRow` ANTES de cada mutacao (arrasto, campos
+numericos -- agrupados por `key` --, reordenar camadas, seguir, resetar); Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z. Nao cobre troca de
+arte. Selecao multipla: `state.multiSel` (Set); Shift+clique no preview/camadas soma/tira; arrastar move o grupo pelo mesmo
+delta (pecas que ja seguem uma selecionada via `followBone` sao puladas pra nao contar em dobro).
+
+Ordem de camadas do NORTH: o default vem do `.scml` e e o MESMO do EAST, o que esta errado pra vista de costas
+(braco/mao/escudo do lado de ca deveriam ficar ATRAS do corpo). Botao "Espelhar profundidade"
+(`mirrorDepthForBackView`, so aparece editando NORTH com arte de costas) inverte a lista toda menos
+`Head`/`Face*`, que continuam por cima -- eles nao estao atras do corpo em profundidade, so por cima na vertical.
+Grava zIndex so nos offsets do NORTH; Ctrl+Z desfaz. `loadFromDetected` ja aplica isso sozinho
+(`applyBackViewDepth`) quando ha arte de costas E o NORTH ainda nao tem ajuste nenhum -- se o perfil salvo trouxe
+`partOffsetsNorth`, a ordem e do usuario e NAO pode ser sobrescrita. `currentLayers(offsets)` aceita o mapa de
+qual vista ler, pra dar pra calcular a ordem do NORTH com o EAST ainda ativo. Cada bloco (braco + mao + o que ela segura) troca de lado
+INTEIRO. Dentro do bloco, o que e SEGURADO (qualquer peca que nao case com arm/hand/leg/foot/body/torso/hip/
+neck/head/face) vai pro FUNDO: de costas o membro fica entre a camera e o objeto -- de frente o escudo cobre o
+braco, de costas o braco cobre o escudo, e a mao aparece por cima do punho da arma.
+
+Nomenclatura Left/Right do rig Craftpix: e o lado DO PERSONAGEM, nao o da tela, e esta correta -- medido no
+Skeleton Crusader, as pecas "Right *" sao desenhadas mais perto da camera (z alto, na frente do corpo) e as
+"Left *" no lado oposto. Como o personagem olha pra EAST, o lado direito dele e o que fica pra camera. O que
+surpreende e que esses pacotes poem o ESCUDO na mao direita e a ESPADA na esquerda (personagem canhoto) -- e
+escolha do artista, nao bug de nome; nao "corrigir" renomeando osso (quebraria a assinatura de rig).
+
+Escala por peca: `partOffsets[osso].scaleX/scaleY` (1 = original), aplicada em `applyManualOverrides` multiplicando
+`world.scaleX/scaleY` -- a peca cresce em torno do PROPRIO PIVO, entao continua presa no mesmo ponto do rig. Campos
+"Escala X/Y (%)" + "Travar". O hit-test do preview tambem escala a area clicavel. Serve pra acertar arte de costas que
+saiu maior/menor que a da frente sem reexportar o PNG.
+
+`check-renderer-wiring.js` tambem recusa caractere de controle invisivel no fonte. Motivo: uma edicao automatizada trocou
+o `\b` de `/^body\b/i` por um byte 0x08 de verdade; a regex nunca casava, o app rodava sem erro nenhum e o sintoma
+("Espelhar profundidade erra as pernas") nao apontava pra causa -- ate no grep o caractere e invisivel.

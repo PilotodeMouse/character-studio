@@ -8,7 +8,7 @@
 // Ex:
 //   npx electron scripts/electron-shot.js "E:/.../Gnoll_1" scratch-gnoll Idle@0.3 Walking@0.4
 //
-// Cada "clip@t" escolhe o clip em "Ver:" e o instante (segundos) e gera
+// Cada "clip@t[@east|north]" escolhe o clip em "Ver:" e o instante (segundos) e gera
 // <prefixo>-<clip>-<t>.png. Sem argumentos de clip, tira um unico print do
 // estado logo apos carregar. O que o renderer escrever no console vai pro
 // stdout (ver o forward de console-message).
@@ -40,6 +40,9 @@ process.on('uncaughtException', (e) => { console.log('ERRO:', e && e.stack || e)
 process.on('unhandledRejection', (e) => { console.log('ERRO (promise):', e && e.stack || e); app.exit(1); });
 
 app.whenReady().then(async () => {
+  // Chromium cacheia os <script> file:// entre execucoes -- sem isso um teste
+  // logo apos editar renderer/*.js roda o codigo ANTIGO e engana o diagnostico.
+  await require('electron').session.defaultSession.clearCache();
   ipcMain.handle('select-pack-folder', async () => pack);
   ipcMain.handle('select-output-folder', async () => path.resolve('scratch-shot-out'));
   ipcMain.handle('select-reference-image', async () => null);
@@ -88,17 +91,20 @@ app.whenReady().then(async () => {
     await save(`${prefix}.png`);
   }
   for (const s of shots) {
-    const [clip, t] = s.split('@');
+    const [clip, t, row] = s.split('@');
     await js(`(() => {
       const sel = document.getElementById('preview-sel-anim');
       sel.value = ${JSON.stringify(clip)};
       sel.dispatchEvent(new Event('change'));
+      const rowSel = document.getElementById('preview-sel-row');
+      rowSel.value = ${JSON.stringify(row || 'east')};
+      rowSel.dispatchEvent(new Event('change'));
       const sl = document.getElementById('preview-time');
       sl.value = ${parseFloat(t) || 0};
       sl.dispatchEvent(new Event('input'));
     })()`);
     await sleep(400);
-    await save(`${prefix}-${clip.replace(/ /g, '')}-${t}.png`);
+    await save(`${prefix}-${clip.replace(/ /g, '')}-${t}${row ? '-' + row : ''}.png`);
   }
   app.quit();
 });

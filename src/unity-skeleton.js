@@ -230,7 +230,9 @@ function drawPose(ctx, pose, images, pivots, origin, scale = 1, selectedBoneName
     const offsetX = -pivot.pivotX * w;
     const offsetY = -(1 - pivot.pivotY) * h;
     ctx.drawImage(img, offsetX, offsetY, w, h);
-    if (item.boneName === selectedBoneName) {
+    // aceita um nome so ou um Set de nomes (selecao multipla)
+    const isSelected = selectedBoneName instanceof Set ? selectedBoneName.has(item.boneName) : item.boneName === selectedBoneName;
+    if (isSelected) {
       // Contorno desenhado dentro do mesmo transform da imagem (mesma
       // translacao/rotacao/escala/flip), entao fica pixel-perfect alinhado
       // com a peca de verdade, em vez de replicar a matematica em outro lugar.
@@ -286,6 +288,13 @@ function applyManualOverrides(pose, overrides) {
         x: item.world.x + dx,
         y: item.world.y + dy,
         angle: item.world.angle + dangle,
+        // Escala por peca (1 = tamanho original). Multiplica a escala do osso,
+        // entao a peca cresce/encolhe EM TORNO DO PROPRIO PIVO -- continua
+        // presa no mesmo ponto do rig, so muda de tamanho. Serve pra acertar
+        // arte de costas que saiu um pouco maior/menor que a da frente sem
+        // ter que reexportar o PNG.
+        scaleX: item.world.scaleX * (o.scaleX ?? 1),
+        scaleY: item.world.scaleY * (o.scaleY ?? 1),
       },
     };
     if (o.pivotX !== undefined && o.pivotY !== undefined) {

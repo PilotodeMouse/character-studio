@@ -46,7 +46,9 @@ function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, creat
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      const pose = applyManualOverrides(computePoseFn(clip, t), partOffsets);
+      // cada linha pode ter os SEUS ajustes manuais (north x east independentes)
+      const rowOffsets = rowSpec.partOffsets || partOffsets;
+      const pose = applyManualOverrides(computePoseFn(clip, t, rowOffsets), rowOffsets);
 
       ctx.save();
       ctx.beginPath();

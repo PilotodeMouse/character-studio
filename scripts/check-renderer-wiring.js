@@ -88,6 +88,30 @@ for (const { name, text } of rendererFiles) {
   }
 }
 
+// 5. Nenhum caractere de controle invisivel no fonte. Ja aconteceu: uma
+// edicao automatizada transformou o "\b" de uma regex (/^body\b/i) num byte
+// 0x08 de verdade. O arquivo continua rodando, a regex simplesmente nunca
+// casa, e o sintoma ("o botao faz a coisa errada") nao aponta pra lugar
+// nenhum -- ate no grep o caractere e invisivel.
+const CONTROL_OK = new Set([9, 10, 13]); // tab, \n, \r
+const sourceFiles = [
+  ...rendererFiles.map((f) => f.name),
+  ...fs.readdirSync(path.join(ROOT, 'src')).filter((f) => f.endsWith('.js')).map((f) => `src/${f}`),
+  'renderer/index.html',
+  'main.js',
+];
+for (const file of sourceFiles) {
+  const buf = fs.readFileSync(path.join(ROOT, file));
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i];
+    if (c < 32 && !CONTROL_OK.has(c)) {
+      const linha = buf.slice(0, i).toString('utf8').split('\n').length;
+      problems.push(`${file}:${linha} -- caractere de controle invisivel 0x${c.toString(16)} no fonte`);
+      break; // um aviso por arquivo ja basta pra achar
+    }
+  }
+}
+
 console.log(
   `Conferido: ${checked.modulos} modulos, ${checked.imports} imports, ${checked.ids} getElementById, ${checked.canais} canais IPC.`
 );
