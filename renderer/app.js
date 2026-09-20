@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds, mirrorCell, applyCounterMirror } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds, mirrorCell, applyHandTransplant } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
@@ -40,7 +40,6 @@ let state = {
   // 'mirror' = espelho horizontal da direcao-fonte (SOUTH<-EAST, WEST<-NORTH),
   //            que e o que a Biblioteca do VTT faz numa entrega de 2 linhas.
   // NORTH e EAST sao sempre 'own': o padrao exige as duas desenhadas.
-  rowModes: { south: 'mirror', west: 'mirror' },
   zIndexByName: new Map(),
   rigId: null,
   outputFolder: null,
@@ -49,11 +48,21 @@ let state = {
   // vista que esta sendo editada (state.previewRow), entao todo o codigo de
   // arrastar/camadas/pivo continua igual e passa a valer so pra vista ativa.
   partOffsetsByRow: { north: new Map(), east: new Map(), south: new Map(), west: new Map() },
+  // Camada POR ANIMACAO, por cima da de cima: row -> nomeDoClip -> Map. Existe
+  // porque um mesmo ajuste nao serve pra todo clip -- no Sliding a perna esta
+  // deitada e precisa de um empurrao que no Idle desmontaria o personagem.
+  // O que esta aqui vale SO naquele clip; o que esta em partOffsetsByRow vale
+  // em todos.
+  clipOffsetsByRow: { north: {}, east: {}, south: {}, west: {} },
+  editClipOnly: false, // pra onde vao as EDICOES: camada do clip ou a geral
   get partOffsets() {
-    return this.partOffsetsByRow[this.previewRow] || this.partOffsetsByRow.east;
+    return this.editClipOnly
+      ? clipLayer(this.previewRow, previewClipName(), true)
+      : this.partOffsetsByRow[this.previewRow] || this.partOffsetsByRow.east;
   },
   set partOffsets(m) {
-    this.partOffsetsByRow[this.previewRow] = m;
+    if (this.editClipOnly) this.clipOffsetsByRow[this.previewRow][previewClipName()] = m;
+    else this.partOffsetsByRow[this.previewRow] = m;
   },
   selectedBone: null,
   multiSel: new Set(), // selecao multipla (Shift): sempre contem selectedBone quando ha selecao
@@ -270,55 +279,117 @@ function imagesForRow(row) {
   return mergeImagesForRow(state.images, state.rowArt[row], { hideFace: BACK_ROWS.has(row) });
 }
 
+// Imagens efetivas de uma LINHA do arquivo: a arte da direcao-fonte e, por
+// cima, os overrides da propria linha. Uma direcao espelhada pode trocar
+// pecas soltas sem deixar de ser espelho -- e o que permite o braco do escudo
+// mostrar a face de TRAS no SOUTH (onde ele passa pro outro lado do corpo)
+// continuando a ser o espelho de EAST no resto.
+function imagesForDisplayRow(row) {
+  const src = sourceRowFor(row);
+  let imgs = imagesForRow(src);
+  const own = src === row ? null : state.rowArt[row];
+  if (own && own.size) imgs = mergeImagesForRow(imgs, own);
+  return imgs;
+}
+
 // A direcao de onde uma linha tira pose/arte: ela mesma, ou a fonte do
 // espelho quando esta em modo 'mirror' (SOUTH<-EAST, WEST<-NORTH).
 function sourceRowFor(row) {
-  return state.rowModes[row] === 'mirror' ? MIRRORED_FROM[row] : row;
+  return MIRRORED_FROM[row] || row;
 }
 
 function isMirrored(row) {
-  return state.rowModes[row] === 'mirror';
+  return !!MIRRORED_FROM[row];
 }
 
 // Numa direcao espelhada, os ajustes DELA sao uma camada de CORRECAO por cima
 // dos da direcao-fonte. Pra exibir (camadas, hit-test) interessa a soma; pra
 // editar, so a camada de cima -- que e o que `state.partOffsets` devolve.
-function offsetsForDisplay(row) {
-  const src = sourceRowFor(row);
-  if (src === row) return state.partOffsetsByRow[row];
-  const merged = new Map([...state.partOffsetsByRow[src]].map(([k, v]) => [k, { ...v }]));
-  for (const [k, v] of state.partOffsetsByRow[row]) merged.set(k, { ...(merged.get(k) || {}), ...v });
-  return merged;
+// Nome do clip que o preview esta mostrando -- e a chave da camada por
+// animacao. Antes do rig carregar nao ha clip nenhum.
+function previewClipName() {
+  const sel = document.getElementById('preview-sel-anim');
+  return (sel && sel.value) || '';
 }
 
-function hasKeepHandsSide(row) {
-  for (const o of state.partOffsetsByRow[row].values()) if (o.counterMirror) return true;
-  return false;
+function temAjuste(row) {
+  if (state.partOffsetsByRow[row].size > 0) return true;
+  return Object.values(state.clipOffsetsByRow[row] || {}).some((m) => m.size > 0);
 }
 
-// Marca (ou desmarca) as pecas que NAO devem acompanhar o espelho: o que a mao
-// segura e o proprio braco/mao, senao a arma se solta da mao. Ver
-// applyCounterMirror em src/unity-skeleton.js.
-//
-// DESLIGADO por padrao, e foi medido antes de decidir: nesses chibi da
-// Craftpix a cabeca e quase simetrica, entao o lado do ESCUDO e praticamente
-// a unica pista de pra onde o personagem olha. Prendendo a arma do mesmo
-// lado, SOUTH fica visualmente igual a EAST e as duas direcoes deixam de se
-// distinguir -- pior que a troca de maos que isto vem consertar. So vale pra
-// personagem cuja assimetria (tapa-olho, emblema) importe mais que a leitura
-// da direcao; o caminho bom nesse caso e desenhar as 4 (ver "Tornar propria").
-function setKeepHandsSide(row, on) {
-  const overlay = state.partOffsetsByRow[row];
-  for (const bone of state.rig.bones.values()) {
-    if (!bone.sprite || !bone.sprite.pngName) continue;
-    const n = bone.name;
-    if (!isHeldItemName(n) && !isLimbName(n)) continue;
-    const entry = { ...(overlay.get(n) || {}) };
-    if (on) entry.counterMirror = true;
-    else delete entry.counterMirror;
-    if (Object.keys(entry).length) overlay.set(n, entry);
-    else overlay.delete(n);
+function clipLayer(row, clipName, create = false) {
+  const porClip = state.clipOffsetsByRow[row] || (state.clipOffsetsByRow[row] = {});
+  if (!porClip[clipName] && create) porClip[clipName] = new Map();
+  return porClip[clipName] || new Map();
+}
+
+// Empilha as camadas de ajuste, da mais geral pra mais especifica, campo a
+// campo (uma camada de cima que so tem `dx` nao apaga o `zIndex` de baixo).
+function mergeOffsetLayers(layers) {
+  const out = new Map();
+  for (const layer of layers) {
+    if (!layer) continue;
+    for (const [k, v] of layer) out.set(k, { ...(out.get(k) || {}), ...v });
   }
+  return out;
+}
+
+// Ajustes que valem de verdade pra desenhar uma linha do arquivo num clip:
+//   geral da direcao-fonte -> clip da fonte -> (se espelhada) geral e clip
+//   da propria linha, que sao a camada de CORRECAO dela.
+function effectiveOffsets(row, clipName) {
+  const src = sourceRowFor(row);
+  const layers = [state.partOffsetsByRow[src], clipLayer(src, clipName)];
+  if (src !== row) layers.push(state.partOffsetsByRow[row], clipLayer(row, clipName));
+  return mergeOffsetLayers(layers);
+}
+
+// O que a UI (camadas, hit-test, campos) enxerga: a soma de tudo que afeta a
+// direcao em edicao no clip que esta na tela.
+function offsetsForDisplay(row) {
+  return effectiveOffsets(row, previewClipName());
+}
+
+// Arma, escudo e afins sao pecas SOLTAS no rig: tem animacao propria em vez
+// de pendurar num osso de mao. Enquanto a pilha de camadas e a original isso
+// nao incomoda, porque cada uma foi animada junto com a mao certa. Mas ao
+// arrumar uma direcao espelhada a peca muda de lugar na pilha e fica do lado
+// da OUTRA mao, continuando a balancar com a antiga -- parece solta no ar.
+//
+// Entao: o que a mao segura acompanha sempre a mao MAIS PROXIMA na pilha
+// daquela direcao. Quando a mao mais proxima e a mesma de sempre (o caso
+// normal, EAST e NORTH sem mexer), nao ha o que transplantar e nada muda.
+function handTransplantsFor(row) {
+  if (!state.rig) return null;
+  const nearestHand = (order) => {
+    const out = new Map();
+    order.forEach((name, i) => {
+      if (!isHeldItemName(name)) return;
+      let best = null;
+      let bestDist = Infinity;
+      order.forEach((other, j) => {
+        if (!isLimbName(other) || !/hand/i.test(other)) return;
+        const d = Math.abs(i - j);
+        if (d < bestDist) {
+          bestDist = d;
+          best = other;
+        }
+      });
+      if (best) out.set(name, best);
+    });
+    return out;
+  };
+
+  const names = (offsets) => currentLayers(offsets).map((l) => l.boneName);
+  const original = nearestHand(names(new Map())); // pilha como veio do .scml
+  const atual = nearestHand(names(offsetsForDisplay(row)));
+
+  const transplants = new Map();
+  for (const [item, to] of atual) {
+    const from = original.get(item);
+    if (from && from !== to) transplants.set(item, { from, to });
+  }
+  return transplants.size ? transplants : null;
 }
 
 // Quais direcoes o arquivo vai ter: 2 (a Biblioteca espelha SOUTH/WEST ao
@@ -330,7 +401,9 @@ function deliveredRows() {
 
 function currentRowCount() {
   const wanted = parseInt(document.getElementById('sel-row-count').value, 10) === 4 ? 4 : 2;
-  const needsFour = ['south', 'west'].some((r) => state.rowModes[r] === 'own');
+  // Direcao espelhada com arte ou ajuste proprio precisa ir no arquivo: a
+  // Biblioteca so sabe espelhar, nao conhece esses ajustes.
+  const needsFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0);
   return needsFour ? 4 : wanted;
 }
 
@@ -341,7 +414,6 @@ async function onSwapPartArt(partName) {
   // arte numa direcao espelhada e o mesmo que dizer "quero desenhar esta",
   // entao ela deixa de ser espelho.
   const row = state.previewRow;
-  if (isMirrored(row)) setRowMode(row, 'own');
   state.partArtOverridesByRow[row].set(partName, filePath);
   rowArtMap(row).set(partName, await loadImageAnyFormat(filePath));
   refreshAfterArtChange();
@@ -365,10 +437,12 @@ async function onResetPartArt(partName) {
   // Nas outras, volta pra arte daquela direcao que veio do disco (se havia);
   // sem ela, a peca simplesmente cai pra base de novo.
   state.rowArt[row].delete(partName);
+  state.rowArtFiles[row].delete(partName);
   for (const [dir, requireSuffix] of state.rowArtSources[row] || []) {
     const file = matchRowArtFiles(fs.readdirSync(dir), [partName], ROW_ART_SUFFIXES[row], requireSuffix).get(partName);
     if (file) {
       state.rowArt[row].set(partName, await loadImage(path.join(dir, file)));
+      state.rowArtFiles[row].set(partName, file);
       break;
     }
   }
@@ -384,7 +458,7 @@ async function loadFromDetected(detected, displayLabel) {
   // proximo a ser importado -- os offsets sao em pixels da arte de UM
   // personagem, nao tem sentido nenhum no outro.
   state.partOffsetsByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
-  state.rowModes = { south: 'mirror', west: 'mirror' };
+  state.clipOffsetsByRow = { north: {}, east: {}, south: {}, west: {} };
   state.undoStack = [];
   state.redoStack = [];
   state.multiSel = new Set();
@@ -393,6 +467,7 @@ async function loadFromDetected(detected, displayLabel) {
   state.lastPose = null;
   state.savedScale = null;
   state.partArtOverridesByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
+  state.rowArtFiles = { north: new Map(), south: new Map(), west: new Map() };
   state.artSourceDir = detected.vectorPartsDir;
   state.artPartNames = fs
     .readdirSync(detected.vectorPartsDir)
@@ -424,6 +499,7 @@ async function loadFromDetected(detected, displayLabel) {
   // Cada direcao aceita uma subpasta propria (Back/Costas, South/Sul,
   // West/Oeste) ou arquivos marcados soltos na Vector Parts ("*-back.png").
   state.rowArt = { north: new Map(), south: new Map(), west: new Map() };
+  state.rowArtFiles = { north: new Map(), south: new Map(), west: new Map() };
   state.rowArtSources = { north: [], south: [], west: [] };
   for (const row of ['north', 'south', 'west']) {
     const sources = state.rowArtSources[row];
@@ -433,13 +509,11 @@ async function loadFromDetected(detected, displayLabel) {
     for (const [from, requireSuffix] of sources) {
       const matches = matchRowArtFiles(fs.readdirSync(from), [...state.pivots.keys()], ROW_ART_SUFFIXES[row], requireSuffix);
       for (const [part, file] of matches) {
-        if (!state.rowArt[row].has(part)) state.rowArt[row].set(part, await loadImage(path.join(from, file)));
+        if (state.rowArt[row].has(part)) continue;
+        state.rowArt[row].set(part, await loadImage(path.join(from, file)));
+        state.rowArtFiles[row].set(part, file);
       }
     }
-  }
-  // Uma direcao que veio desenhada do disco nao e espelho de ninguem.
-  for (const row of ['south', 'west']) {
-    if (state.rowArt[row].size) state.rowModes[row] = 'own';
   }
 
   // Le pixel a pixel, entao roda UMA vez por pacote e fica em cache no state:
@@ -529,11 +603,27 @@ async function loadFromDetected(detected, displayLabel) {
   // So quando o NORTH ainda nao tem ajuste nenhum: se o perfil trouxe algo
   // salvo, a ordem e do usuario e nao pode ser sobrescrita. O botao continua
   // ali pra reaplicar, e o Ctrl+Z nao desfaz isso (e o estado inicial).
-  for (const row of ['north', 'west']) {
-    if (state.rowArt[row].size && state.partOffsetsByRow[row].size === 0) {
-      applyBackViewDepth(state.partOffsetsByRow[row]);
-      log(`${row.toUpperCase()}: profundidade das camadas ja espelhada automaticamente.`, 'ok');
-    }
+  // Padrao do rig: so quando ESTE personagem ainda nao tem ajuste proprio
+  // (o do personagem e soberano -- ver o comentario em src/rig-profile.js).
+  const semAjuste = ROWS.every((r) => !temAjuste(r));
+  const defaults = profileStore.read(state.rigId) && profileStore.read(state.rigId).rowDefaults;
+  if (semAjuste && defaults) {
+    const pecas = await applyRowDefaults(defaults);
+    state.alphaBoxes = computeAlphaBoxes(state.images, (w, h) => {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      return c;
+    });
+    log(`Arrumacao padrao deste rig aplicada${pecas ? ` (${pecas} pecas com arte propria por direcao)` : ''}.`, 'ok');
+  }
+
+  // So o NORTH: o WEST e espelho dele e herda a ordem ja arrumada. Gravar
+  // zIndex no WEST tambem o faria contar como "tem ajuste proprio" e forcaria
+  // o arquivo de 4 linhas sem necessidade.
+  if (!defaults && state.rowArt.north.size && state.partOffsetsByRow.north.size === 0) {
+    applyBackViewDepth(state.partOffsetsByRow.north);
+    log('NORTH: profundidade das camadas ja espelhada automaticamente.', 'ok');
   }
 
   applyAutoFitScale();
@@ -614,8 +704,15 @@ function applyRigProfileIfKnown() {
   if (mine) {
     const saved = characterOffsetsByRow(mine);
     state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, new Map(Object.entries(saved[r] || {}))]));
+    state.clipOffsetsByRow = Object.fromEntries(
+      ROWS.map((r) => [
+        r,
+        Object.fromEntries(
+          Object.entries((mine.clipOffsetsByRow || {})[r] || {}).map(([c, o]) => [c, new Map(Object.entries(o))])
+        ),
+      ])
+    );
     for (const r of ['south', 'west']) {
-      if (mine.rowModes && mine.rowModes[r]) state.rowModes[r] = mine.rowModes[r];
     }
     if (mine.scale) {
       state.savedScale = mine.scale;
@@ -624,6 +721,12 @@ function applyRigProfileIfKnown() {
     document.getElementById('num-offset-x').value = mine.offsetX || 0;
     document.getElementById('num-offset-y').value = mine.offsetY || 0;
     notes.push(`Ajustes manuais de <b>${characterName}</b> restaurados.`);
+  }
+
+  if (profile.droppedCounterMirror) {
+    notes.push(
+      `Desliguei "manter armas na mesma mao" em ${profile.droppedCounterMirror} pecas: a opcao chegou ligada por padrao numa versao anterior e foi revertida -- prendendo a arma, SOUTH fica igual a EAST e as duas direcoes deixam de se distinguir. Ligue de novo no preview se quiser.`
+    );
   }
 
   if (profile.migratedFromV1 && profile.droppedPartOffsets) {
@@ -652,7 +755,6 @@ function applyRigProfileIfKnown() {
       pushUndo();
       const sourceByRow = characterOffsetsByRow(source);
       state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, new Map(Object.entries(sourceByRow[r] || {}))]));
-      if (source.rowModes) state.rowModes = { south: 'mirror', west: 'mirror', ...source.rowModes };
       selectPart(null);
       updateRowControls();
       onPreviewTime();
@@ -718,11 +820,10 @@ function rowsFor(cfg, kind) {
       row,
       clip: clipFor[src],
       hasArt: ownArt,
-      images: src === 'east' ? undefined : imagesForRow(src),
+      images: imagesForDisplayRow(row),
       // sem arte propria a linha e so a pose de EAST -> usa os ajustes de EAST
-      partOffsets: ownArt ? state.partOffsetsByRow[src] : state.partOffsetsByRow.east,
-      // numa linha espelhada, os ajustes DELA sao correcao por cima da fonte
-      overlayOffsets: src === row ? null : state.partOffsetsByRow[row],
+      partOffsets: ownArt ? effectiveOffsets(row, clipFor[src].name) : effectiveOffsets('east', clipFor.east.name),
+      handTransplants: handTransplantsFor(row),
       mirror: isMirrored(row),
       mirrorFrom: MIRRORED_FROM[row],
     };
@@ -744,7 +845,7 @@ function previewBaseClip(cfg) {
 // edicao (espelhada ou propria).
 function updateRowControls() {
   const rowCountSel = document.getElementById('sel-row-count');
-  const forcedFour = ['south', 'west'].some((r) => state.rowModes[r] === 'own');
+  const forcedFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0);
   if (forcedFour) rowCountSel.value = '4';
   rowCountSel.disabled = forcedFour;
 
@@ -763,13 +864,8 @@ function updateRowControls() {
   if (mirrorable) {
     const mir = isMirrored(row);
     document.getElementById('row-mode-hint').textContent = mir
-      ? `${row.toUpperCase()} e o espelho de ${mirrorable.toUpperCase()} -- o mesmo que a Biblioteca do VTT faria. Nao tem arte nem ajuste proprio.`
-      : `${row.toUpperCase()} e desenhada: tem arte e ajustes so dela, e o arquivo sai com as 4 linhas.`;
-    const btn = document.getElementById('btn-row-mode');
-    btn.textContent = mir ? 'Tornar propria (desenhar esta direcao)' : `Voltar a espelhar de ${mirrorable.toUpperCase()}`;
-    // A correcao de lado das armas so existe numa direcao espelhada.
-    document.getElementById('keep-hands-label').style.display = mir ? '' : 'none';
-    document.getElementById('chk-keep-hands').checked = hasKeepHandsSide(row);
+      ? `${row.toUpperCase()} e o espelho de ${mirrorable.toUpperCase()}. Da pra ajustar e trocar a arte aqui mesmo -- o que voce mexer vale so nesta direcao.`
+      : '';
   }
   document.getElementById('row-count-note').textContent =
     currentRowCount() === 2
@@ -785,28 +881,6 @@ function setEditingRow(row) {
   selectPart(null);
   renderLayersList();
   renderTemplatePartsList();
-}
-
-// 'own' faz a direcao deixar de ser espelho: ela parte de uma COPIA dos
-// ajustes da fonte, pra comecar igual a ela em vez de crua, e dali o usuario
-// troca a arte peca a peca. 'mirror' devolve a direcao pro espelho e joga
-// fora arte e ajustes proprios (por isso passa pelo pushUndo).
-function setRowMode(row, mode) {
-  if (!MIRRORED_FROM[row] || state.rowModes[row] === mode) return;
-  pushUndo();
-  const src = MIRRORED_FROM[row];
-  if (mode === 'own') {
-    state.partOffsetsByRow[row] = new Map([...state.partOffsetsByRow[src]].map(([k, v]) => [k, { ...v }]));
-  } else {
-    state.partOffsetsByRow[row] = new Map();
-    state.rowArt[row] = new Map();
-    state.partArtOverridesByRow[row] = new Map();
-  }
-  state.rowModes[row] = mode;
-  updateRowControls();
-  renderLayersList();
-  renderTemplatePartsList();
-  onPreviewTime();
 }
 
 function onPreviewTime() {
@@ -829,6 +903,12 @@ function onPreviewTime() {
   const shown = side ? delivered : [active];
   for (const row of ROWS) {
     const canvas = canvasForRow(row);
+    // A ORDEM NA TELA nao e a ordem do arquivo: na tela elas aparecem como se
+    // o personagem girasse no proprio eixo (anti-horario), que e o que deixa
+    // as quatro comparaveis de relance. No .webp a ordem continua sendo a do
+    // padrao (ROWS: NORTH, EAST, SOUTH, WEST) -- o jogo descobre a direcao
+    // pelo NUMERO da linha, entao ali ela nao pode mudar.
+    canvas.style.order = PREVIEW_ORDER.indexOf(row);
     canvas.style.display = shown.includes(row) ? '' : 'none';
     canvas.classList.toggle('active-row', side && row === active);
     canvas.classList.toggle('mirrored-row', isMirrored(row));
@@ -837,6 +917,11 @@ function onPreviewTime() {
     drawRow(canvasForRow(r), r, cfg, baseClip, clampedT, active);
   }
 }
+
+// Anti-horario na tela: NORTH (costas, sobe pra direita) -> WEST (costas,
+// sobe pra esquerda) -> SOUTH (frente, desce pra esquerda) -> EAST (frente,
+// desce pra direita). So afeta o preview, nunca o arquivo.
+const PREVIEW_ORDER = ['north', 'west', 'south', 'east'];
 
 // EAST fica no canvas historico (#preview-canvas): um monte de codigo (zoom,
 // fundo, listeners) ja aponta pra ele pelo id.
@@ -883,18 +968,20 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // 8 frames as cegas.
   // Direcao espelhada nao tem nada de seu: mostra a fonte, invertida.
   const src = sourceRowFor(row);
-  const offsets = state.partOffsetsByRow[src];
   const showsBack = BACK_ROWS.has(src);
   const previewClip = showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
-  const previewImages = imagesForRow(src);
+  const offsets = effectiveOffsets(row, previewClip.name);
+  const previewImages = imagesForDisplayRow(row);
 
   const rawPose = computePoseFn(previewClip, clampedT, offsets);
   let pose = applyManualOverrides(rawPose, offsets);
-  // Mesmo encadeamento do bake (ver src/baker.js): correcao da propria
-  // direcao por cima da fonte, depois o contra-espelho das pecas marcadas.
-  const overlay = src === row ? null : state.partOffsetsByRow[row];
-  if (overlay) pose = applyManualOverrides(pose, overlay);
-  if (isMirrored(row)) pose = applyCounterMirror(pose, overlay);
+  const transplants = handTransplantsFor(row);
+  if (transplants) {
+    // t=0 da o encaixe da peca na mao antiga; dali ela vira filha rigida da
+    // mao nova (ver applyHandTransplant em src/unity-skeleton.js).
+    const refPose = applyManualOverrides(computePoseFn(previewClip, 0, offsets), offsets);
+    pose = applyHandTransplant(pose, transplants, refPose);
+  }
 
   // "Ocultas": arma e SlashFX ficam com alpha 0 fora dos clips de ataque (o
   // prefab grava 0 no bind e quem acende e uma curva de m_Color.a). Sem isso
@@ -1005,7 +1092,12 @@ function cloneOffsetMap(m) {
   return new Map([...m].map(([k, v]) => [k, { ...v }]));
 }
 function snapshotOffsets() {
-  return Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap(state.partOffsetsByRow[r])]));
+  return {
+    geral: Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap(state.partOffsetsByRow[r])])),
+    porClip: Object.fromEntries(
+      ROWS.map((r) => [r, Object.fromEntries(Object.entries(state.clipOffsetsByRow[r] || {}).map(([c, m]) => [c, cloneOffsetMap(m)]))])
+    ),
+  };
 }
 
 // Chamar ANTES de mudar os ajustes. `key` agrupa mudancas em sequencia (ex:
@@ -1024,7 +1116,10 @@ function pushUndo(key = null) {
 }
 
 function restoreSnapshot(snap) {
-  state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap(snap[r] || new Map())]));
+  state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap((snap.geral || {})[r] || new Map())]));
+  state.clipOffsetsByRow = Object.fromEntries(
+    ROWS.map((r) => [r, Object.fromEntries(Object.entries((snap.porClip || {})[r] || {}).map(([c, m]) => [c, cloneOffsetMap(m)]))])
+  );
   lastUndoKey = null;
   const keep = new Set(state.multiSel);
   selectPart(state.selectedBone); // reatualiza campos + camadas
@@ -1073,7 +1168,15 @@ function followsAnyIn(boneName, set) {
   return false;
 }
 
+function updateEditScopeLabel() {
+  const clip = previewClipName();
+  document.getElementById('edit-clip-only-label').textContent = clip
+    ? `Ajustar so em "${clip}"`
+    : 'Ajustar so nesta animacao';
+}
+
 function selectPart(boneName) {
+  updateEditScopeLabel();
   state.selectedBone = boneName;
   state.multiSel = new Set(boneName ? [boneName] : []);
   document.getElementById('sel-part-name').textContent = boneName || '(nenhuma peca selecionada)';
@@ -1140,6 +1243,99 @@ function currentLayers(offsets = state.partOffsets) {
     .sort((a, b) => a.z - b.z);
 }
 
+// Nome do ARQUIVO que esta desenhando esta peca NESTA direcao. Depois de
+// trocar Sword por Axe (ou Shield por shield-back), a linha tem que dizer o
+// arquivo de verdade -- senao nao da pra saber o que esta montado.
+function artFileInUse(pngName, row = state.previewRow) {
+  const override = state.partArtOverridesByRow[row] && state.partArtOverridesByRow[row].get(pngName);
+  if (override) return path.basename(override);
+  const src = sourceRowFor(row);
+  const fromRow = state.rowArtFiles[row] && state.rowArtFiles[row].get(pngName);
+  const fromSrc = state.rowArtFiles[src] && state.rowArtFiles[src].get(pngName);
+  const srcOverride = state.partArtOverridesByRow[src] && state.partArtOverridesByRow[src].get(pngName);
+  return fromRow || (srcOverride && path.basename(srcOverride)) || fromSrc || pngName;
+}
+
+// ARRUMACAO PADRAO DAS 4 DIRECOES, no nivel do ESQUELETO. O usuario arruma
+// um personagem uma vez (ordem das camadas, pecas ocultas, qual arquivo cada
+// peca usa em cada direcao) e manda salvar; os proximos personagens do mesmo
+// rig abrem ja prontos. E o que torna viavel produzir centenas de skins.
+//
+// A arte vai como NOME DE ARQUIVO, nao caminho: no fluxo de skins o proximo
+// personagem tem os PNGs dele com os mesmos nomes, entao o nome resolve na
+// pasta dele. Peca que nao existir la simplesmente nao e trocada.
+function captureRowDefaults() {
+  const out = {};
+  for (const row of ROWS) {
+    const arte = {};
+    for (const bone of state.rig.bones.values()) {
+      const png = bone.sprite && bone.sprite.pngName;
+      if (!png) continue;
+      const emUso = artFileInUse(png, row);
+      if (emUso !== png) arte[png] = emUso;
+    }
+    // SO o que e estrutural da direcao: ordem das camadas e peca oculta.
+    // dx/dy/angulo/pivo/escala/amortecimento sao correcoes na arte de UM
+    // personagem -- herdar isso entre personagens e exatamente o erro que o
+    // formato v1 do perfil cometia (ver src/rig-profile.js), e chega o
+    // proximo da serie ja desmontado.
+    const offsets = {};
+    for (const [nome, o] of state.partOffsetsByRow[row]) {
+      const guardar = {};
+      if (o.zIndex !== undefined) guardar.zIndex = o.zIndex;
+      if (o.hidden) guardar.hidden = true;
+      if (Object.keys(guardar).length) offsets[nome] = guardar;
+    }
+    out[row] = { offsets, art: arte };
+  }
+  return out;
+}
+
+async function applyRowDefaults(defaults) {
+  let pecas = 0;
+  for (const row of ROWS) {
+    const def = defaults[row];
+    if (!def) continue;
+    state.partOffsetsByRow[row] = new Map(Object.entries(def.offsets || {}));
+    for (const [png, arquivo] of Object.entries(def.art || {})) {
+      const caminho = path.join(state.artSourceDir || '', arquivo);
+      if (!state.artSourceDir || !fs.existsSync(caminho)) continue;
+      const img = await loadImage(caminho);
+      if (row === 'east') state.images.set(png, img);
+      else {
+        state.rowArt[row].set(png, img);
+        state.rowArtFiles[row].set(png, arquivo);
+      }
+      state.partArtOverridesByRow[row].set(png, caminho);
+      pecas++;
+    }
+  }
+  return pecas;
+}
+
+function onSaveRowDefaults() {
+  if (!state.rig || !state.rigId) return;
+  profileStore.saveRowDefaults(state.rigId, captureRowDefaults());
+  log(
+    `Arrumacao das 4 direcoes salva como padrao do rig ${state.rigId.slice(0, 8)}: os proximos personagens deste esqueleto ja abrem assim.`,
+    'ok'
+  );
+}
+
+// Ocultar e por DIRECAO: da pra ter o esqueleto com escudo no EAST e sem no
+// SOUTH. Vira alpha 0 na pose (ver applyManualOverrides), entao o drawPose
+// simplesmente pula a peca -- no preview e no bake igual.
+function toggleLayerHidden(boneName) {
+  pushUndo();
+  const entry = { ...(state.partOffsets.get(boneName) || {}) };
+  if (entry.hidden) delete entry.hidden;
+  else entry.hidden = true;
+  if (Object.keys(entry).length) state.partOffsets.set(boneName, entry);
+  else state.partOffsets.delete(boneName);
+  renderLayersList();
+  onPreviewTime();
+}
+
 function renderLayersList() {
   if (!state.rig) return;
   const layerOffsets = offsetsForDisplay(state.previewRow);
@@ -1163,18 +1359,24 @@ function renderLayersList() {
     const pngName = bone && bone.sprite ? bone.sprite.pngName : null;
     const isCustom = pngName && artOverridesForView().has(pngName);
     const canSwap = !!(state.artSourceDir && pngName);
+    const hidden = !!(layerOffsets.get(layer.boneName) || {}).hidden;
 
     row.innerHTML =
       `<span class="layer-handle">&#8942;&#8942;</span>` +
-      `<span class="layer-name">${layer.boneName}` +
-      (pngName ? `<span class="layer-file">${pngName}${isCustom ? ' (sua arte)' : ''}</span>` : '') +
+      `<span class="layer-name"${hidden ? ' style="opacity:.45"' : ''}>${layer.boneName}` +
+      (pngName ? `<span class="layer-file">${artFileInUse(pngName)}</span>` : '') +
       `</span>` +
+      `<button class="layer-btn" data-action="hide" title="${hidden ? 'Mostrar esta peca' : 'Ocultar esta peca nesta direcao (ex: um esqueleto sem escudo)'}">${hidden ? '&#128065;' : '&#9898;'}</button>` +
       (canSwap ? `<button class="layer-btn" data-action="load" title="Trocar a arte desta peca">Arte</button>` : '') +
-      (canSwap && isCustom ? `<button class="layer-btn" data-action="reset" title="Voltar pra arte default do template">&#8634;</button>` : '');
+      (canSwap && isCustom ? `<button class="layer-btn" data-action="reset" title="Voltar pra arte que veio do disco">&#8634;</button>` : '');
 
     row.querySelector('.layer-name').addEventListener('click', (ev) => {
       if (ev.shiftKey) toggleMultiSelect(layer.boneName);
       else selectPart(layer.boneName);
+    });
+    row.querySelector('[data-action="hide"]').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleLayerHidden(layer.boneName);
     });
     const loadBtn = row.querySelector('[data-action="load"]');
     if (loadBtn) loadBtn.addEventListener('click', (ev) => { ev.stopPropagation(); onSwapPartArt(pngName); });
@@ -1406,12 +1608,7 @@ function onPreviewCanvasMouseMove(e) {
     pushUndo();
   }
   for (const [name, start] of state.drag.starts) {
-    // Numa peca contra-espelhada (arma/braco que nao acompanha o espelho), o
-    // dx entra ANTES da inversao de applyCounterMirror, entao o sinal que
-    // chega na tela e o oposto -- sem isto ela foge pro lado contrario do
-    // arrasto, e so ela, o que parece defeito aleatorio.
-    const flip = isMirrored(state.previewRow) && start.counterMirror ? -1 : 1;
-    state.partOffsets.set(name, { ...start, dx: (start.dx || 0) + dx * flip, dy: (start.dy || 0) - dy });
+    state.partOffsets.set(name, { ...start, dx: (start.dx || 0) + dx, dy: (start.dy || 0) - dy });
   }
   const o = state.partOffsets.get(state.selectedBone);
   if (o) {
@@ -1592,7 +1789,16 @@ async function onBakeClick() {
     offsetY: cfg.offsetY,
     rowCount: cfg.rowCount,
     partOffsetsByRow: Object.fromEntries(ROWS.map((r) => [r, Object.fromEntries(state.partOffsetsByRow[r])])),
-    rowModes: { ...state.rowModes },
+    clipOffsetsByRow: Object.fromEntries(
+      ROWS.map((r) => [
+        r,
+        Object.fromEntries(
+          Object.entries(state.clipOffsetsByRow[r] || {})
+            .filter(([, m]) => m.size)
+            .map(([c, m]) => [c, Object.fromEntries(m)])
+        ),
+      ])
+    ),
   });
   log(
     `Formato de saida salvo para o rig ${state.rigId.slice(0, 8)} (a serie herda); ajustes manuais salvos so para "${cfg.characterName}".`,
@@ -1624,6 +1830,9 @@ document.getElementById('sel-anim-walk').addEventListener('change', () => {
 });
 document.getElementById('preview-sel-anim').addEventListener('change', () => {
   document.getElementById('preview-time').value = 0;
+  // camadas e campos dependem do clip agora (camada de ajuste por animacao)
+  selectPart(state.selectedBone);
+  renderLayersList();
   onPreviewTime();
 });
 document.getElementById('preview-chk-show-hidden').addEventListener('change', onPreviewTime);
@@ -1660,18 +1869,14 @@ document.getElementById('preview-sel-row').addEventListener('change', (e) => {
 });
 document.getElementById('preview-chk-side').addEventListener('change', onPreviewTime);
 document.getElementById('btn-mirror-depth').addEventListener('click', mirrorDepthForBackView);
+document.getElementById('btn-save-row-defaults').addEventListener('click', onSaveRowDefaults);
+document.getElementById('chk-edit-clip-only').addEventListener('change', (e) => {
+  state.editClipOnly = e.target.checked;
+  selectPart(state.selectedBone); // os campos passam a mostrar a camada que sera editada
+});
 document.getElementById('sel-row-count').addEventListener('change', () => {
   updateRowControls();
   onPreviewTime();
-});
-document.getElementById('chk-keep-hands').addEventListener('change', (e) => {
-  pushUndo();
-  setKeepHandsSide(state.previewRow, e.target.checked);
-  onPreviewTime();
-});
-document.getElementById('btn-row-mode').addEventListener('click', () => {
-  const row = state.previewRow;
-  setRowMode(row, isMirrored(row) ? 'own' : 'mirror');
 });
 
 // Encontra a escala que faz a referencia caber inteira dentro da celula sem

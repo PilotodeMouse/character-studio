@@ -69,15 +69,25 @@ O padrao do VTT quer quatro linhas na ordem fixa NORTH, EAST, SOUTH, WEST, e ace
   algo que nao pode trocar de ombro (espada numa mao, tapa-olho, emblema) -- espelhar deixaria o
   personagem canhoto.
 
-No app, o seletor **Linhas** escolhe a entrega. Cada direcao tem arte e ajustes proprios; SOUTH e WEST
-comecam como espelho de EAST e NORTH e viram "proprias" quando voce carrega arte nelas ou clica em
-"Tornar propria". Uma direcao propria obriga a entrega de 4 linhas.
+No app, o seletor **Linhas** escolhe a entrega. SOUTH e WEST sao sempre o espelho de EAST e NORTH, e sao
+editaveis: arraste as pecas, reordene as camadas, troque a arte de cada uma. Qualquer ajuste numa delas
+obriga a entrega de 4 linhas, porque a Biblioteca so sabe espelhar e nao conhece esses ajustes.
 
-Espelhar o personagem inteiro troca a espada de mao e joga o escudo pro outro ombro. Existe a opcao
-**"Manter armas na mesma mao"** pra isso, mas ela vem DESLIGADA: nos chibi da Craftpix a cabeca e quase
-simetrica, entao o lado do escudo e praticamente a unica pista de pra onde o personagem olha -- prendendo a
-arma, SOUTH fica visualmente igual a EAST. Ligue so quando a assimetria do personagem pesar mais que a
-leitura da direcao; o caminho bom nesse caso e desenhar as 4 linhas.
+O que a mao segura (espada, escudo, machado) acompanha sozinho a **mao mais proxima na pilha de camadas**:
+ao mover o escudo pra perto da outra mao, ele passa a balancar com ela em vez de ficar solto no ar. Cada
+linha de camada mostra o **arquivo** que esta desenhando a peca (depois de trocar Sword por Axe, a linha diz
+`axe.png`) e tem um botao pra **ocultar** aquela peca naquela direcao -- da pra sair com escudo no EAST e sem
+no SOUTH.
+
+Por padrao, um ajuste de peca vale em TODAS as animacoes daquela direcao -- e o que voce quer ao calibrar a
+montagem. Quando a pose de uma animacao especifica e tao diferente que o ajuste geral nao serve (a perna
+deitada no Sliding, por exemplo), ligue **"Ajustar so em <animacao>"** no painel da peca: dali em diante o
+que voce mexer vale so naquela animacao, e o Idle/Walk nao sentem nada.
+
+Depois de arrumar as quatro direcoes de um personagem, o botao **"Salvar arrumacao como padrao do rig"**
+guarda essa arrumacao no perfil do ESQUELETO: ordem das camadas, pecas ocultas e qual arquivo cada peca usa
+em cada direcao. Os proximos personagens do mesmo rig ja abrem assim. Ajuste de posicao (offset, pivo,
+escala) nao entra: e correcao da arte de um personagem so, e herdar isso desmontaria os outros.
 
 A direcao espelhada aceita ajuste fino: arraste a peca no preview dela e o ajuste fica so ali, sem tocar na
 direcao de origem.

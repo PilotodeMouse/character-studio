@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 function computeRigFingerprint(rig) {
   const names = [...rig.bones.values()]
@@ -43,6 +43,26 @@ function computeRigFingerprint(rig) {
 // Devolve sempre a forma v2, venha o arquivo de onde vier. `migratedFromV1`
 // e `droppedPartOffsets` existem pra UI conseguir explicar ao usuario por que
 // os ajustes antigos dele sumiram, em vez de simplesmente sumirem.
+// Apaga o sinalizador `counterMirror` de todas as pecas, em todas as direcoes
+// de todos os personagens do perfil. Devolve quantas pecas foram limpas, pra
+// UI conseguir dizer ao usuario o que sumiu em vez de simplesmente sumir.
+function stripCounterMirror(characters) {
+  let dropped = 0;
+  for (const entry of Object.values(characters)) {
+    const byRow = entry && entry.partOffsetsByRow;
+    if (!byRow) continue;
+    for (const offsets of Object.values(byRow)) {
+      for (const part of Object.values(offsets || {})) {
+        if (part && part.counterMirror) {
+          delete part.counterMirror;
+          dropped++;
+        }
+      }
+    }
+  }
+  return dropped;
+}
+
 function normalizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -52,15 +72,27 @@ function normalizeProfile(raw) {
     framesWalk: raw.framesWalk,
     hasNorthView: raw.hasNorthView,
     rowCount: raw.rowCount, // undefined nos perfis anteriores as 4 direcoes
+    rowDefaults: raw.rowDefaults || null,
   };
 
   if (Number(raw.version) >= 2) {
+    const characters = raw.characters && typeof raw.characters === 'object' ? raw.characters : {};
+    // MIGRACAO v2 -> v3: descarta `counterMirror` ("manter armas na mesma
+    // mao") dos perfis v2. A opcao chegou LIGADA por padrao e foi revertida
+    // depois de ver o resultado: prendendo a arma do mesmo lado, SOUTH fica
+    // visualmente igual a EAST e as duas direcoes deixam de se distinguir.
+    // Quem bakeou nessa janela ficou com o sinalizador gravado sem nunca ter
+    // escolhido isso, e sem a limpeza continuaria com o efeito ruim mesmo
+    // depois da correcao. Quem LIGAR a opcao daqui pra frente grava em v3 e
+    // nao passa mais por aqui.
+    const dropped = Number(raw.version) < 3 ? stripCounterMirror(characters) : 0;
     return {
       ...bake,
       version: SCHEMA_VERSION,
-      characters: raw.characters && typeof raw.characters === 'object' ? raw.characters : {},
+      characters,
       migratedFromV1: false,
       droppedPartOffsets: 0,
+      droppedCounterMirror: dropped,
     };
   }
 
@@ -128,7 +160,7 @@ class RigProfileStore {
   // Grava preferencias de bake (nivel esqueleto) + ajustes do personagem
   // (nivel personagem) numa tacada so, preservando o que ja estava la para
   // os OUTROS personagens.
-  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, scale, offsetX, offsetY, partOffsetsByRow, rowModes }) {
+  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, scale, offsetX, offsetY, partOffsetsByRow, clipOffsetsByRow, rowModes }) {
     const current = this.read(rigId) || { characters: {} };
     const next = {
       version: SCHEMA_VERSION,
@@ -137,6 +169,7 @@ class RigProfileStore {
       framesWalk,
       hasNorthView,
       rowCount, // 2 (a Biblioteca espelha SOUTH/WEST) ou 4 (todas desenhadas)
+      rowDefaults: current.rowDefaults, // arrumacao padrao das direcoes (nivel esqueleto)
       characters: { ...current.characters },
     };
     if (characterName) {
@@ -146,6 +179,7 @@ class RigProfileStore {
         offsetX,
         offsetY,
         partOffsetsByRow: byRow,
+        clipOffsetsByRow: clipOffsetsByRow || {}, // ajustes que valem so numa animacao
         rowModes: rowModes || {},
         // Espelha as duas primeiras direcoes nas chaves antigas tambem, pra um
         // perfil gravado aqui continuar sendo lido por uma versao anterior do
@@ -154,6 +188,24 @@ class RigProfileStore {
         partOffsetsNorth: byRow.north || {},
       };
     }
+    fs.writeFileSync(this._pathFor(rigId), JSON.stringify(next, null, 2));
+    return next;
+  }
+
+  // ARRUMACAO PADRAO DAS DIRECOES, no nivel do ESQUELETO -- a serie inteira
+  // herda. E o que permite arrumar NORTH/SOUTH/WEST uma vez (ordem das
+  // camadas, pecas ocultas, qual arquivo cada peca usa em cada direcao) e os
+  // proximos personagens do mesmo rig ja abrirem prontos.
+  //
+  // A arte vai como NOME DE ARQUIVO, nao como caminho: o proximo personagem
+  // tem os seus proprios PNGs com os mesmos nomes (e exatamente assim que o
+  // fluxo de skins funciona), entao o nome resolve na pasta dele.
+  saveRowDefaults(rigId, rowDefaults) {
+    const current = this.read(rigId) || { characters: {} };
+    const next = { ...current, version: SCHEMA_VERSION, rowDefaults, characters: { ...current.characters } };
+    delete next.migratedFromV1;
+    delete next.droppedPartOffsets;
+    delete next.droppedCounterMirror;
     fs.writeFileSync(this._pathFor(rigId), JSON.stringify(next, null, 2));
     return next;
   }

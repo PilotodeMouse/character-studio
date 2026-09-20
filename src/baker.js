@@ -4,7 +4,7 @@
 // ou direto do .scml (scml-rig, usado quando o .prefab e binario e o
 // primeiro caminho falha com 0 ossos/0 clips). Quem chama decide isso e
 // passa a funcao ja resolvida; ver computePoseFn em renderer/app.js.
-const { drawPose, applyManualOverrides, mirrorCell, applyCounterMirror } = require('./unity-skeleton');
+const { drawPose, applyManualOverrides, mirrorCell, applyHandTransplant } = require('./unity-skeleton');
 const { cellSpecFor } = require('./vtt-standards');
 
 // rows: array de { row, clip, hasArt, images, partOffsets, mirror, mirrorFrom }
@@ -22,7 +22,10 @@ const { cellSpecFor } = require('./vtt-standards');
 //   jeito que a Biblioteca do VTT expande uma entrega de duas linhas. So faz
 //   sentido em SOUTH (de EAST) e WEST (de NORTH): o par e costas com costas
 //   e frente com frente, nunca a linha 1 virando a linha 3.
-// - partOffsets (por linha): ajustes manuais daquela direcao.
+// - partOffsets (por linha): os ajustes manuais que valem pra essa linha
+//   NESSE clip, ja somados por quem chama (ver effectiveOffsets em
+//   renderer/app.js: geral da direcao + camada daquela animacao + correcao da
+//   linha espelhada).
 // partOffsets (raiz, opcional): Map<boneName,{dx,dy,dangle,dampX,dampY,dampAngle,...}>
 // com correcoes manuais do usuario. Precisa ir tanto pro computePose quanto
 // pro applyManualOverrides -- o primeiro cobre o amortecimento (dampX/Y/Angle,
@@ -53,16 +56,17 @@ function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, creat
     }
 
     const rowImages = rowSpec.images || images;
+    const rowOffsets = rowSpec.partOffsets || partOffsets;
+    // Pose de referencia (t=0) so pra medir COMO a peca esta encaixada na mao
+    // antes de transplanta-la pra outra mao -- ver applyHandTransplant.
+    const refPose = rowSpec.handTransplants
+      ? applyManualOverrides(computePoseFn(clip, 0, rowOffsets), rowOffsets)
+      : null;
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      // cada linha pode ter os SEUS ajustes manuais (north x east independentes)
-      const rowOffsets = rowSpec.partOffsets || partOffsets;
       let pose = applyManualOverrides(computePoseFn(clip, t, rowOffsets), rowOffsets);
-      // Numa linha espelhada, `overlayOffsets` e a camada de correcao DELA por
-      // cima dos ajustes da direcao-fonte (ver rowsFor em renderer/app.js).
-      if (rowSpec.overlayOffsets) pose = applyManualOverrides(pose, rowSpec.overlayOffsets);
-      if (rowSpec.mirror) pose = applyCounterMirror(pose, rowSpec.overlayOffsets);
+      pose = applyHandTransplant(pose, rowSpec.handTransplants, refPose);
 
       ctx.save();
       ctx.beginPath();

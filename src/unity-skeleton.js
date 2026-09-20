@@ -7,7 +7,7 @@
 // sair de cabeca pra baixo ou espelhado ao testar com arte real, e so
 // inverter aqui -- e o unico ponto sensivel a convencao do projeto inteiro.
 const { sampleClip } = require('./unity-clip-sampler');
-const { identityTransform, combine } = require('./pose-math');
+const { identityTransform, combine, relativeTo } = require('./pose-math');
 
 const CONVENTION = { flipY: true, invertAngle: true };
 
@@ -301,35 +301,44 @@ function applyManualOverrides(pose, overrides) {
       next.pivotOverride = { pivotX: o.pivotX, pivotY: o.pivotY };
     }
     if (o.zIndex !== undefined) next.zIndex = o.zIndex;
+    // Camada ocultada a mao (ex: o mesmo esqueleto sem escudo). O drawPose
+    // pula quem tem alpha 0, entao some do preview E do bake.
+    if (o.hidden) next.alpha = 0;
     return next;
   });
   withOverrides.sort((a, b) => a.zIndex - b.zIndex);
   return withOverrides;
 }
 
-// Desfaz o espelho da celula PARA ALGUMAS PECAS. Uma peca marcada com
-// `counterMirror` volta ao original em posicao, angulo e na propria arte
-// (negar x e o angulo e inverter o flipX compoe exatamente com o mirrorCell
-// abaixo), entao ela desenha como se a celula nao estivesse espelhada.
+// O que a mao segura (espada, escudo, machado...) e uma peca SOLTA no rig:
+// tem animacao propria e nao pendura em osso nenhum. Medido no Skeleton
+// Crusader: no Walking, a distancia do escudo pra QUALQUER osso varia de 60 a
+// 150px -- ele nao esta preso nem na mao nem no braco, so foi animado pra
+// parecer que esta. Enquanto a pilha de camadas e a original isso nao
+// incomoda; mas ao reordenar uma direcao a peca fica do lado da OUTRA mao e
+// continua com a animacao da antiga, boiando no ar.
 //
-// Existe por causa do efeito classico de espelhar personagem: o corpo vira
-// pro lado certo, mas a espada troca de mao e o escudo pula pro outro ombro.
-// Marcando o que a mao segura (e o proprio braco/mao, senao a arma se solta
-// da mao), a direcao espelhada mantem a arma do mesmo lado.
-function applyCounterMirror(pose, overrides) {
-  if (!overrides || overrides.size === 0) return pose;
-  let touched = false;
-  const out = pose.map((item) => {
-    const o = overrides.get(item.boneName);
-    if (!o || !o.counterMirror) return item;
-    touched = true;
-    return {
-      ...item,
-      world: { ...item.world, x: -item.world.x, angle: -item.world.angle },
-      sprite: { ...item.sprite, flipX: !item.sprite.flipX },
-    };
+// `transplants` e um Map<pecaSegurada, {from, to}>: a mao em que ela parece
+// encaixada e a mao vizinha agora. A peca passa a ser filha RIGIDA da mao
+// nova -- o encaixe e medido uma vez (como ela estava na mao antiga em
+// `referencePose`) e reaplicado quadro a quadro. Somar so a diferenca entre
+// as duas maos nao serve: a peca nao e rigida em relacao a nenhuma das duas,
+// entao o proprio balanco dela continuaria por cima.
+function applyHandTransplant(pose, transplants, referencePose) {
+  if (!transplants || transplants.size === 0) return pose;
+  const ref = new Map((referencePose || pose).map((i) => [i.boneName, i.world]));
+  const worldByBone = new Map(pose.map((i) => [i.boneName, i.world]));
+  return pose.map((item) => {
+    const t = transplants.get(item.boneName);
+    if (!t) return item;
+    const maoAntiga = ref.get(t.from);
+    const encaixe = ref.get(item.boneName);
+    const maoNova = worldByBone.get(t.to);
+    if (!maoAntiga || !encaixe || !maoNova) return item;
+    const local = relativeTo(maoAntiga, encaixe);
+    const world = combine(maoNova, local);
+    return { ...item, world: { ...item.world, x: world.x, y: world.y, angle: world.angle } };
   });
-  return touched ? out : pose;
 }
 
 // Espelho horizontal de UMA celula, em torno do eixo do corpo (que e o meio
@@ -350,7 +359,7 @@ module.exports = {
   computePose,
   drawPose,
   mirrorCell,
-  applyCounterMirror,
+  applyHandTransplant,
   CONVENTION,
   quatToAngleDeg,
   applyManualOverrides,

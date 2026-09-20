@@ -262,6 +262,10 @@
           Clique numa peca no preview ou no painel de camadas (a direita), arraste no preview pra mover. O ajuste fica salvo por rig -- outros personagens da mesma serie herdam.
         </div>
         <div id="sel-part-name" style="color:var(--muted); margin-bottom:6px;">(nenhuma peca selecionada)</div>
+        <label class="checkbox-row" style="margin:0 0 8px;"
+               title="Desligado, o ajuste vale em TODAS as animacoes daquela direcao -- e o que voce quer ao calibrar a montagem. Ligado, vale so na animacao que esta na tela: serve pro caso em que a pose e tao diferente que o ajuste geral nao serve, como a perna deitada no Sliding.">
+          <input type="checkbox" id="chk-edit-clip-only" /> <span id="edit-clip-only-label">Ajustar so nesta animacao</span>
+        </label>
         <div class="row">
           <div>
             <label>Offset X (px)</label>
@@ -300,8 +304,9 @@
             <label class="checkbox-row" style="margin:0;" title="Mexe nos dois juntos, pra nao distorcer a arte"><input type="checkbox" id="part-scale-lock" checked /> Travar</label>
           </div>
         </div>
-        <label>Segue outra peca (mesmo movimento)</label>
+        <label title="Soma a esta peca o AJUSTE MANUAL da outra (offset/rotacao que voce configurou), nao a animacao.">Segue o ajuste de outra peca</label>
         <select id="part-follow-bone"><option value="">(nenhuma)</option></select>
+
 
         <h2>Amortecimento do movimento (reduz o balanco)</h2>
         <div id="part-damp-hint" style="color:var(--muted); font-size:11px; margin-bottom:6px;"></div>
@@ -461,11 +466,6 @@
 
       <div id="row-mode-box" style="display:none; margin-bottom:8px; align-items:center; gap:8px; flex-wrap:wrap;">
         <span id="row-mode-hint" style="color:var(--muted); font-size:11px; flex:1 1 220px;"></span>
-        <label id="keep-hands-label" class="checkbox-row" style="margin:0; flex:0 0 auto;"
-               title="Espelhar o personagem inteiro troca a espada de mao e joga o escudo pro outro ombro. Com isto ligado, o corpo vira mas braco, mao e o que ela segura ficam do mesmo lado. Cuidado: nos chibi da Craftpix o lado do escudo e quase a unica pista de direcao, e prender a arma deixa SOUTH igual a EAST.">
-          <input type="checkbox" id="chk-keep-hands" /> Manter armas na mesma mao
-        </label>
-        <button id="btn-row-mode" class="secondary" style="flex:0 0 auto;"></button>
       </div>
 
       <div id="preview-viewport">
@@ -544,6 +544,10 @@
     <button id="btn-mirror-depth" class="secondary" style="display:none; width:100%; margin-bottom:8px;"
             title="De costas, o que estava na frente do corpo passa pra tras e vice-versa (bracos, maos, escudo, espada). Cabeca e rosto continuam na frente. Ctrl+Z desfaz.">
       Espelhar profundidade (vista de costas)
+    </button>
+    <button id="btn-save-row-defaults" class="secondary" style="width:100%; margin-bottom:8px;"
+            title="Guarda a arrumacao das 4 direcoes (ordem das camadas, pecas ocultas, qual arquivo cada peca usa) como padrao DESTE esqueleto. Os proximos personagens do mesmo rig abrem ja assim -- e o que torna viavel produzir centenas de skins.">
+      Salvar camadas como padrao do rig
     </button>
     <div id="layers-list"></div>
 
