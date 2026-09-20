@@ -73,10 +73,14 @@ No app, o seletor **Linhas** escolhe a entrega. Cada direcao tem arte e ajustes 
 comecam como espelho de EAST e NORTH e viram "proprias" quando voce carrega arte nelas ou clica em
 "Tornar propria". Uma direcao propria obriga a entrega de 4 linhas.
 
-Espelhar o personagem inteiro troca a espada de mao e joga o escudo pro outro ombro. Por isso as direcoes
-espelhadas vem com **"Manter armas na mesma mao"** ligado: o corpo vira, mas braco, mao e o que ela segura
-ficam do mesmo lado. A direcao espelhada tambem aceita ajuste fino -- arraste a peca no preview dela e o
-ajuste fica so ali, sem tocar na direcao de origem.
+Espelhar o personagem inteiro troca a espada de mao e joga o escudo pro outro ombro. Existe a opcao
+**"Manter armas na mesma mao"** pra isso, mas ela vem DESLIGADA: nos chibi da Craftpix a cabeca e quase
+simetrica, entao o lado do escudo e praticamente a unica pista de pra onde o personagem olha -- prendendo a
+arma, SOUTH fica visualmente igual a EAST. Ligue so quando a assimetria do personagem pesar mais que a
+leitura da direcao; o caminho bom nesse caso e desenhar as 4 linhas.
+
+A direcao espelhada aceita ajuste fino: arraste a peca no preview dela e o ajuste fica so ali, sem tocar na
+direcao de origem.
 
 ## Uso
 

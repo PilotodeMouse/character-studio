@@ -299,6 +299,14 @@ function hasKeepHandsSide(row) {
 // Marca (ou desmarca) as pecas que NAO devem acompanhar o espelho: o que a mao
 // segura e o proprio braco/mao, senao a arma se solta da mao. Ver
 // applyCounterMirror em src/unity-skeleton.js.
+//
+// DESLIGADO por padrao, e foi medido antes de decidir: nesses chibi da
+// Craftpix a cabeca e quase simetrica, entao o lado do ESCUDO e praticamente
+// a unica pista de pra onde o personagem olha. Prendendo a arma do mesmo
+// lado, SOUTH fica visualmente igual a EAST e as duas direcoes deixam de se
+// distinguir -- pior que a troca de maos que isto vem consertar. So vale pra
+// personagem cuja assimetria (tapa-olho, emblema) importe mais que a leitura
+// da direcao; o caminho bom nesse caso e desenhar as 4 (ver "Tornar propria").
 function setKeepHandsSide(row, on) {
   const overlay = state.partOffsetsByRow[row];
   for (const bone of state.rig.bones.values()) {
@@ -521,12 +529,6 @@ async function loadFromDetected(detected, displayLabel) {
   // So quando o NORTH ainda nao tem ajuste nenhum: se o perfil trouxe algo
   // salvo, a ordem e do usuario e nao pode ser sobrescrita. O botao continua
   // ali pra reaplicar, e o Ctrl+Z nao desfaz isso (e o estado inicial).
-  // Direcao espelhada ja nasce com as armas do lado certo -- espelhar o
-  // personagem inteiro e o que faz a espada trocar de mao, e ninguem quer isso.
-  for (const row of ['south', 'west']) {
-    if (isMirrored(row) && state.partOffsetsByRow[row].size === 0) setKeepHandsSide(row, true);
-  }
-
   for (const row of ['north', 'west']) {
     if (state.rowArt[row].size && state.partOffsetsByRow[row].size === 0) {
       applyBackViewDepth(state.partOffsetsByRow[row]);
@@ -799,7 +801,6 @@ function setRowMode(row, mode) {
     state.partOffsetsByRow[row] = new Map();
     state.rowArt[row] = new Map();
     state.partArtOverridesByRow[row] = new Map();
-    setKeepHandsSide(row, true);
   }
   state.rowModes[row] = mode;
   updateRowControls();

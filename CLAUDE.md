@@ -145,11 +145,16 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
 - O espelho e do CANVAS, nao da pose: `mirrorCell(ctx, axisX)` (`src/unity-skeleton.js`), celula por celula em
   torno do eixo do corpo, igual a Biblioteca -- espelhar a faixa inteira inverteria a ordem das colunas e
   tocaria a passada de tras pra frente. O preview usa o mesmo `mirrorCell`, entao tela e `.webp` batem.
-- **Armas na mesma mao** (`applyCounterMirror` + `setKeepHandsSide`, ligado por padrao): espelhar o personagem
+- **Armas na mesma mao** (`applyCounterMirror` + `setKeepHandsSide`, DESLIGADO por padrao): espelhar o personagem
   inteiro troca a espada de mao e joga o escudo pro outro ombro. As pecas marcadas com `counterMirror` no
   overlay da direcao voltam ao original em posicao, angulo E arte (negar x, negar o angulo e inverter o flipX
   compoe exatamente com o `mirrorCell`), entao o corpo vira e braco/mao/arma ficam no lugar. Marca o que a mao
   segura (`isHeldItemName`) e tambem o braco/mao (`isLimbName`) -- so a arma se soltaria da mao.
+  Foi ligado por padrao e revertido depois de medir no app: nesses chibi a cabeca e quase simetrica, entao o
+  lado do ESCUDO e praticamente a unica pista de direcao. Prendendo a arma, SOUTH fica visualmente IGUAL a
+  EAST e as duas direcoes deixam de se distinguir -- pior que a troca de maos que a opcao vem consertar. Fica
+  como opcao pra personagem cuja assimetria (tapa-olho, emblema) pese mais que a leitura da direcao; o
+  caminho bom nesse caso e desenhar as 4.
 - Direcao espelhada E EDITAVEL: os ajustes dela sao uma camada de CORRECAO (`overlayOffsets`) por cima dos da
   fonte; `offsetsForDisplay(row)` soma as duas pra camadas/hit-test, e o que se edita e so a de cima.
   Dois sinais que ja mordiam: o hit-test desespelha o X do mouse (`canvasEventToLocalCraftpix` usa
