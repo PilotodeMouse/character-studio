@@ -78,13 +78,24 @@ mudanca pronta -- o renderer inteiro roda dentro de uma IIFE (`renderer/app.js`)
 `getElementById` retornando `null` mata todos os `addEventListener` registrados depois dele, e o sintoma e
 "nada funciona" no app, sem nenhuma pista de onde comecou. Ja aconteceu duas vezes nesta sessao.
 
-## Pendente (proximo passo natural)
+## Fallback pelo .scml (prefab binario) -- `src/scml-rig.js` LIGADO em `renderer/app.js`
 
-`src/scml-rig.js` implementa e valida um caminho de pose/animacao direto do `.scml` (sem depender do
-`.unitypackage`), mas **ainda nao esta ligado em `renderer/app.js`**. E o que resolve pacotes com `.prefab`
-serializado em BINARIO (nao YAML texto) que hoje falham silenciosamente com 0 ossos/0 clips -- ex: Pumpkin
-Head Guy (Unity 2017.1.1f1). Fazer o app usar `computeScmlPose`/`pivotsFromScml`/`clipsFromScml`/
-`computeScmlBounds` como fonte primaria e cair pro `.unitypackage` so como fallback.
+Pacotes Craftpix antigos (Unity ~2017: Archer Guy, Medieval Mage, Barbarian Warrior, Pumpkin Head Guy)
+trazem o `.prefab` em serializacao BINARIA, e `unity-yaml.js` so le texto -> 0 ossos/0 clips,
+silenciosamente (o personagem "nao monta nem anima", sem erro nenhum). `loadFromDetected` agora tenta o
+Unity primeiro e, se vier vazio, cai pro `.scml` direto (`state.poseSource = 'scml'`).
+
+Toda amostragem de pose passa por `computePoseFn`/`computeBoundsFn` em `renderer/app.js`, e `bakeGrid`
+recebe `computePoseFn` em vez de `rig` + `zIndexByName` -- o baker nao sabe de que fonte a pose vem. No
+modo scml, `state.rig` e um stand-in `{clips, bones}` (bones "de mentirinha" tirados da pose em t=0, so
+pra alimentar camadas/hit-test).
+
+Lacunas do modo scml: o amortecimento (`dampX/Y/Angle`) nao tem efeito (`computeScmlPose` nao le
+`partOffsets`; `selectPart` pula `findAnimatedAncestorName` nesse modo). O alpha vem das keys do proprio
+scml (nao ha `m_FloatCurves`). O nome da peca e o da timeline (`Body`, `Head`...), nao um osso-junta.
+
+Ao testar headless: `node-canvas` nao abre caminho com acento (`Bárbaro`) -- use
+`loadImage(fs.readFileSync(p))`. O app (Electron) le por buffer e nao sofre disso.
 
 ## Templates de rig embutidos (`src/rig-templates.js` + pasta `templates/`)
 

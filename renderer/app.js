@@ -20,6 +20,7 @@ const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpi
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
 const { EXPORT, DEFAULT_SIZE, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 const { listTemplates, loadTemplate } = require('../src/rig-templates');
+const { computeScmlPose, clipsFromScml, computeScmlBounds } = require('../src/scml-rig');
 
 const os = require('os');
 const profileStore = new RigProfileStore(path.join(os.homedir(), '.isometric-character-studio', 'rig-profiles'));
@@ -46,6 +47,10 @@ let state = {
   refOffsetX: 0,
   refOffsetY: 0,
   zoom: 1,
+  // De onde vem a pose: 'unity' (.unitypackage -> .prefab YAML) ou 'scml'
+  // (fallback direto do .scml, pra pacotes com .prefab binario). Decidido em
+  // loadFromDetected; quem amostra pose passa por computePoseFn.
+  poseSource: 'unity',
   activeTemplate: null, // {id, dir, detected, partNames} quando a fonte e um template embutido, null quando e pasta externa
   // Trocar a arte de uma peca vale pras DUAS fontes (template ou pasta do
   // personagem). artSourceDir e a pasta de onde a arte original veio -- e o
@@ -274,11 +279,41 @@ async function loadFromDetected(detected, displayLabel) {
     return c;
   });
 
+  // Caminho principal: .unitypackage -> .prefab (YAML texto) -> AnimationClip.
+  // Alguns pacotes mais antigos da Craftpix (Unity ~2017, ex: Archer Guy,
+  // Medieval Mage, Barbarian Warrior, Pumpkin Head Guy) exportam o .prefab
+  // serializado em BINARIO -- unity-yaml.js so entende texto, entao esse
+  // caminho volta com 0 ossos/0 clips, silenciosamente (o personagem "nao
+  // monta nem anima" sem erro nenhum na tela). O .scml e sempre XML texto e
+  // tem as animacoes completas (src/scml-rig.js, ja validado); cai pra ele
+  // quando o caminho do Unity nao rende nada.
   log(`Extraindo ${path.basename(detected.unitypackagePath)}...`);
-  const pkg = await extractUnityPackage(detected.unitypackagePath);
-  const prefabGuid = pkg.findGuidByPathnameSuffix('.prefab');
-  if (!prefabGuid) throw new Error('Nao encontrei o .prefab dentro do .unitypackage.');
-  state.rig = buildRig(pkg.readAsset(prefabGuid), pkg.guidToPathname);
+  state.poseSource = 'unity';
+  state.rig = null;
+  try {
+    const pkg = await extractUnityPackage(detected.unitypackagePath);
+    const prefabGuid = pkg.findGuidByPathnameSuffix('.prefab');
+    if (!prefabGuid) throw new Error('sem .prefab no .unitypackage');
+    const unityRig = buildRig(pkg.readAsset(prefabGuid), pkg.guidToPathname);
+    if (unityRig.bones.size === 0 || unityRig.clips.length === 0) throw new Error('.prefab sem ossos/clips (provavelmente binario)');
+    state.rig = unityRig;
+  } catch (err) {
+    log(`Caminho do Unity nao rendeu (${err.message}) -- usando o .scml direto.`, 'warn');
+  }
+
+  if (!state.rig) {
+    state.poseSource = 'scml';
+    const scmlClips = clipsFromScml(parsedScml.entities[0]);
+    // bones "de mentirinha": so o suficiente pra alimentar o painel de
+    // camadas/hit-test/follow-bone, que esperam Map<nome, {name, sprite}>.
+    // Amostra o primeiro clip em t=0 -- todas as animacoes do mesmo entity
+    // compartilham as mesmas timelines de sprite, entao qualquer uma revela
+    // as pecas todas.
+    const samplePose = scmlClips.length ? computeScmlPose(scmlClips[0].animation, 0) : [];
+    const pseudoBones = new Map(samplePose.map((item) => [item.boneName, { name: item.boneName, sprite: item.sprite }]));
+    state.rig = { clips: scmlClips, bones: pseudoBones };
+    log('Fonte da animacao: .scml direto (prefab binario). Amortecimento de balanco (Damp X/Y/Angulo) ainda nao tem efeito nesse modo.', 'warn');
+  }
 
   document.getElementById('pack-info').textContent =
     `${displayLabel} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
@@ -337,7 +372,7 @@ function applyAutoFitScale(force = false) {
   // pelo Idle deixa o walk.webp cortado na celula.
   const clips = [cfg.idleClip, cfg.walkClip].filter(Boolean);
   const bounds = clips
-    .map((clip) => computeAnimatedBounds(state.rig, clip, state.pivots, state.partOffsets, state.alphaBoxes))
+    .map((clip) => computeBoundsFn(clip))
     .reduce((acc, b) => ({
       minX: Math.min(acc.minX, b.minX),
       maxX: Math.max(acc.maxX, b.maxX),
@@ -425,6 +460,21 @@ function applyRigProfileIfKnown() {
       log(`Ajustes manuais de "${from}" copiados para este personagem.`, 'warn');
     });
   }
+}
+
+// Amostra a pose de um clip no tempo t, sem quem chama precisar saber se ela
+// vem do .unitypackage (unity-skeleton) ou direto do .scml (scml-rig,
+// fallback pra .prefab binario -- ver loadFromDetected). As duas devolvem o
+// mesmo formato de item, entao drawPose/applyManualOverrides/bakeGrid
+// funcionam identicos dali pra frente.
+function computePoseFn(clip, t) {
+  if (state.poseSource === 'scml') return computeScmlPose(clip.animation, t);
+  return computePose(state.rig, clip, t, state.zIndexByName, state.partOffsets);
+}
+
+function computeBoundsFn(clip) {
+  if (state.poseSource === 'scml') return computeScmlBounds(clip, state.pivots);
+  return computeAnimatedBounds(state.rig, clip, state.pivots, state.partOffsets, state.alphaBoxes);
 }
 
 function readConfig() {
@@ -529,7 +579,7 @@ function onPreviewTime() {
   const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
   const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
 
-  const rawPose = computePose(state.rig, previewClip, clampedT, state.zIndexByName, state.partOffsets);
+  const rawPose = computePoseFn(previewClip, clampedT);
   let pose = applyManualOverrides(rawPose, state.partOffsets);
 
   // "Ocultas": arma e SlashFX ficam com alpha 0 fora dos clips de ataque (o
@@ -648,7 +698,13 @@ function selectPart(boneName) {
   // -- e o unico que o preview deste modo toca -- e guarda o resultado em
   // state.selectedDampBone pra applyOffsetFieldsToSelected gravar no lugar certo.
   const cfg = readConfig();
-  const dampBone = boneName && cfg.idleClip ? findAnimatedAncestorName(state.rig, cfg.idleClip, boneName) : boneName;
+  // No modo .scml (fallback de prefab binario) nao existe hierarquia de
+  // ossos-junta nem curvas Unity pra procurar -- findAnimatedAncestorName
+  // le clip.positionCurves/bone.path, que so o rig do Unity tem.
+  const dampBone =
+    boneName && cfg.idleClip && state.poseSource === 'unity'
+      ? findAnimatedAncestorName(state.rig, cfg.idleClip, boneName)
+      : boneName;
   state.selectedDampBone = dampBone;
   const d = (dampBone && state.partOffsets.get(dampBone)) || {};
   document.getElementById('part-damp-x').value = (d.dampX || 0) * 100;
@@ -951,10 +1007,9 @@ async function onBakeClick() {
   for (const job of jobs) {
     const rows = rowsFor(cfg, job.kind);
     const { canvas, warnings, cell } = bakeGrid({
-      rig: state.rig,
+      computePoseFn,
       images: state.images,
       pivots: state.pivots,
-      zIndexByName: state.zIndexByName,
       rows,
       frameCount: job.frames,
       size: cfg.size,

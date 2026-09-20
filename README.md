@@ -22,12 +22,11 @@ Goblin). O `.scml` tem as animacoes completas (17 a 18 clips, com keyframes reai
 por osso), e o `.scml` embutido dentro do proprio `.unitypackage` e identico (mesmo md5) ao que acompanha
 o pack solto.
 
-O app hoje ainda le a animacao pelo caminho do Unity (`.unitypackage` -> `.prefab` YAML -> `AnimationClip`),
-nao pelo `.scml` diretamente -- ver "Pendente" abaixo. Esse caminho funciona bem quando o `.prefab` foi
-exportado como YAML texto, mas pacotes mais antigos (Unity ~2017) trazem o `.prefab` serializado em
-BINARIO, e o parser devolve 0 ossos/0 clips (ex: Pumpkin Head Guy). `src/scml-rig.js` ja implementa e
-valida o caminho alternativo lendo direto do `.scml` (que e sempre XML texto, nunca falha por isso), mas
-ainda nao esta ligado na interface.
+O app le a animacao primeiro pelo caminho do Unity (`.unitypackage` -> `.prefab` YAML -> `AnimationClip`).
+Esse caminho funciona quando o `.prefab` foi exportado como YAML texto, mas pacotes mais antigos (Unity
+~2017: Archer Guy, Medieval Mage, Barbarian Warrior, Pumpkin Head Guy) trazem o `.prefab` serializado em
+BINARIO, e o parser devolve 0 ossos/0 clips. Nesse caso o app cai sozinho pro `src/scml-rig.js`, que le
+direto do `.scml` (sempre XML texto, nunca falha por isso).
 
 ## Arquitetura
 
@@ -37,7 +36,7 @@ ainda nao esta ligado na interface.
 - `src/unity-clip-sampler.js` -- avaliacao Hermite das curvas (posicao + quaternion) no tempo `t`
 - `src/unity-skeleton.js` -- compoe o transform mundial de cada osso e desenha os sprites anexados num canvas (`drawPose`/`computePose`/`computeAnimatedBounds`/`applyManualOverrides`) -- o modulo mais sensivel do projeto, ver comentario grande sobre a convencao de pivo do Spriter ali dentro antes de mexer
 - `src/scml-parser.js` -- le o `.scml`: pivot/dimensao de cada PNG, `z_index` de camadas (o Unity exporta `m_SortingOrder=0` pra tudo nesses pacotes) e as animacoes completas
-- `src/scml-rig.js` -- caminho ALTERNATIVO de pose/animacao direto do `.scml`, sem depender do `.unitypackage`. Validado, ainda nao ligado no `renderer/app.js`
+- `src/scml-rig.js` -- pose/animacao direto do `.scml`, sem depender do `.unitypackage`. E o fallback automatico quando o `.prefab` e binario (Archer Guy, Medieval Mage, Barbarian Warrior...)
 - `src/alpha-bounds.js` -- mede a caixa de pixels realmente opacos de cada PNG (a moldura exportada pela Craftpix tem 40-60% de ar), usada pelo auto-fit de escala
 - `src/back-art.js` -- merge de imagens de costas (opcional) com as da frente, peca a peca, pra linha NORTH do bake
 - `src/craftpix-profile.js` -- detecta a estrutura "craftpix-classic", aplica o mapeamento default de animacoes (`Idle`->idle, `Walking`->walk) e detecta a subpasta opcional de arte de costas (`Vector Parts/Back` ou `Costas`)
@@ -70,6 +69,6 @@ frente automaticamente.
 
 ## Limitacoes conhecidas
 
-- `scml-rig.js` (caminho alternativo, sem depender do `.unitypackage`) esta validado mas nao ligado na UI -- e o que faz pacotes com `.prefab` binario (ex: Pumpkin Head Guy) nao carregarem hoje
+- Pacotes com `.prefab` binario carregam pelo `.scml` (fallback automatico), mas nesse modo o amortecimento de balanco (Damp X/Y/Angulo) ainda nao tem efeito
 - So Idle/Walk sao bakeados por padrao; os outros clips (Slashing, Running, Dying, etc.) existem no rig mas nao tem botao dedicado de export
 - FX/arma com alpha animado por clip (`m_FloatCurves`) ainda nao e lido -- partes como Sword/SlashFX usam so o alpha da pose de bind

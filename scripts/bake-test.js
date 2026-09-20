@@ -14,6 +14,7 @@ const { getZIndexByPartName } = require('../src/scml-zorder');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
 const { bakeGrid } = require('../src/baker');
+const { computePose } = require('../src/unity-skeleton');
 const { validateGrid, validateCharacterFolderName } = require('../src/validate');
 
 const charDir = process.argv[2];
@@ -56,7 +57,7 @@ const size = process.argv[4] || '2x2';
       { row: 'north', clip, hasArt: false },
       { row: 'east', clip, hasArt: true },
     ];
-    const { canvas, warnings } = bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas });
+    const { canvas, warnings } = bakeGrid({ computePoseFn: (clip, t) => computePose(rig, clip, t, zIndexByName), images, pivots, rows, frameCount, size, createCanvas });
     const errors = validateGrid({ kind, size, frameCount, rowCount: rows.length, canvasWidth: canvas.width, canvasHeight: canvas.height });
     warnings.forEach((w) => console.log('[' + kind + '] AVISO:', w));
     errors.forEach((e) => console.log('[' + kind + '] ERRO:', e));

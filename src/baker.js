@@ -1,7 +1,10 @@
 // Monta o grid de spritesheet exigido pelo VTT (linhas = direcoes, colunas =
-// frames) a partir de um clip real extraido do .unitypackage, usando
-// unity-skeleton para amostrar cada pose.
-const { computePose, drawPose, applyManualOverrides } = require('./unity-skeleton');
+// frames), amostrando cada pose via computePoseFn(clip, t) -- assim este
+// modulo nao precisa saber se a pose vem do .unitypackage (unity-skeleton)
+// ou direto do .scml (scml-rig, usado quando o .prefab e binario e o
+// primeiro caminho falha com 0 ossos/0 clips). Quem chama decide isso e
+// passa a funcao ja resolvida; ver computePoseFn em renderer/app.js.
+const { drawPose, applyManualOverrides } = require('./unity-skeleton');
 const { cellSpecFor } = require('./vtt-standards');
 
 // rows: array de { row: 'north'|'east', clip, hasArt, images } na ordem em
@@ -23,7 +26,7 @@ const { cellSpecFor } = require('./vtt-standards');
 // scale: a MESMA "Escala do personagem dentro da celula" usada no preview
 // (cfg.scale). Sem isso o bake sai num tamanho diferente do que voce calibrou
 // na tela -- era assim ate agora: o preview aplicava a escala e o bake nao.
-function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets, scale = 1 }) {
+function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, createCanvas, originOffset = { x: 0, y: 0 }, partOffsets, scale = 1 }) {
   const cell = cellSpecFor(size);
   const canvas = createCanvas(cell.w * frameCount, cell.h * rows.length);
   const ctx = canvas.getContext('2d');
@@ -43,7 +46,7 @@ function bakeGrid({ rig, images, pivots, zIndexByName, rows, frameCount, size, c
 
     for (let f = 0; f < frameCount; f++) {
       const t = (f * clip.length) / frameCount;
-      const pose = applyManualOverrides(computePose(rig, clip, t, zIndexByName, partOffsets), partOffsets);
+      const pose = applyManualOverrides(computePoseFn(clip, t), partOffsets);
 
       ctx.save();
       ctx.beginPath();
