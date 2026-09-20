@@ -51,6 +51,7 @@ function normalizeProfile(raw) {
     framesIdle: raw.framesIdle,
     framesWalk: raw.framesWalk,
     hasNorthView: raw.hasNorthView,
+    rowCount: raw.rowCount, // undefined nos perfis anteriores as 4 direcoes
   };
 
   if (Number(raw.version) >= 2) {
@@ -69,6 +70,20 @@ function normalizeProfile(raw) {
     characters: {},
     migratedFromV1: true,
     droppedPartOffsets: Object.keys(raw.partOffsets || {}).length,
+  };
+}
+
+// Ajustes de um personagem em TODAS as quatro direcoes, venha o perfil do
+// formato novo (partOffsetsByRow) ou do anterior, que so guardava EAST
+// (partOffsets) e NORTH (partOffsetsNorth).
+function characterOffsetsByRow(entry) {
+  if (!entry) return { north: {}, east: {}, south: {}, west: {} };
+  const byRow = entry.partOffsetsByRow || {};
+  return {
+    north: byRow.north || entry.partOffsetsNorth || {},
+    east: byRow.east || entry.partOffsets || {},
+    south: byRow.south || {},
+    west: byRow.west || {},
   };
 }
 
@@ -113,7 +128,7 @@ class RigProfileStore {
   // Grava preferencias de bake (nivel esqueleto) + ajustes do personagem
   // (nivel personagem) numa tacada so, preservando o que ja estava la para
   // os OUTROS personagens.
-  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, scale, offsetX, offsetY, partOffsets, partOffsetsNorth }) {
+  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, scale, offsetX, offsetY, partOffsetsByRow, rowModes }) {
     const current = this.read(rigId) || { characters: {} };
     const next = {
       version: SCHEMA_VERSION,
@@ -121,10 +136,23 @@ class RigProfileStore {
       framesIdle,
       framesWalk,
       hasNorthView,
+      rowCount, // 2 (a Biblioteca espelha SOUTH/WEST) ou 4 (todas desenhadas)
       characters: { ...current.characters },
     };
     if (characterName) {
-      next.characters[characterName] = { scale, offsetX, offsetY, partOffsets: partOffsets || {}, partOffsetsNorth: partOffsetsNorth || {} };
+      const byRow = partOffsetsByRow || {};
+      next.characters[characterName] = {
+        scale,
+        offsetX,
+        offsetY,
+        partOffsetsByRow: byRow,
+        rowModes: rowModes || {},
+        // Espelha as duas primeiras direcoes nas chaves antigas tambem, pra um
+        // perfil gravado aqui continuar sendo lido por uma versao anterior do
+        // app (e vice-versa -- ver characterOffsetsByRow).
+        partOffsets: byRow.east || {},
+        partOffsetsNorth: byRow.north || {},
+      };
     }
     fs.writeFileSync(this._pathFor(rigId), JSON.stringify(next, null, 2));
     return next;
@@ -138,4 +166,4 @@ class RigProfileStore {
   }
 }
 
-module.exports = { computeRigFingerprint, RigProfileStore, normalizeProfile, SCHEMA_VERSION };
+module.exports = { computeRigFingerprint, RigProfileStore, normalizeProfile, characterOffsetsByRow, SCHEMA_VERSION };

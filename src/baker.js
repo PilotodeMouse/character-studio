@@ -4,11 +4,13 @@
 // ou direto do .scml (scml-rig, usado quando o .prefab e binario e o
 // primeiro caminho falha com 0 ossos/0 clips). Quem chama decide isso e
 // passa a funcao ja resolvida; ver computePoseFn em renderer/app.js.
-const { drawPose, applyManualOverrides } = require('./unity-skeleton');
+const { drawPose, applyManualOverrides, mirrorCell, applyCounterMirror } = require('./unity-skeleton');
 const { cellSpecFor } = require('./vtt-standards');
 
-// rows: array de { row: 'north'|'east', clip, hasArt, images } na ordem em
-// que devem ser desenhadas.
+// rows: array de { row, clip, hasArt, images, partOffsets, mirror, mirrorFrom }
+// na ordem EXIGIDA pelo VTT (NORTH, EAST, SOUTH, WEST -- ver ROWS em
+// src/vtt-standards.js; o jogo descobre a direcao pelo NUMERO da linha, nao
+// por rotulo nenhum dentro da imagem).
 // - hasArt=false: sem view de costas nenhuma (nem pose nem arte propria) --
 //   a linha e preenchida com a mesma pose de EAST e marcada como placeholder.
 // - images (opcional): substitui o `images` principal so pra esta linha --
@@ -16,7 +18,12 @@ const { cellSpecFor } = require('./vtt-standards');
 //   frente numa pose diferente). Normalmente vem de mergeImagesForRow
 //   (renderer/app.js), que usa o PNG de costas quando existe e cai pro PNG
 //   da frente peca a peca quando nao (arte parcial de costas e permitida).
-// partOffsets (opcional): Map<boneName,{dx,dy,dangle,dampX,dampY,dampAngle,...}>
+// - mirror=true: a linha e o espelho horizontal de outra (mirrorFrom), do
+//   jeito que a Biblioteca do VTT expande uma entrega de duas linhas. So faz
+//   sentido em SOUTH (de EAST) e WEST (de NORTH): o par e costas com costas
+//   e frente com frente, nunca a linha 1 virando a linha 3.
+// - partOffsets (por linha): ajustes manuais daquela direcao.
+// partOffsets (raiz, opcional): Map<boneName,{dx,dy,dangle,dampX,dampY,dampAngle,...}>
 // com correcoes manuais do usuario. Precisa ir tanto pro computePose quanto
 // pro applyManualOverrides -- o primeiro cobre o amortecimento (dampX/Y/Angle,
 // que age no espaco local de cada osso, antes da composicao da hierarquia) e
@@ -41,6 +48,9 @@ function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, creat
         `Linha ${rowSpec.row}: sem arte de costas no pacote de origem, usando a pose de EAST como placeholder.`
       );
     }
+    if (rowSpec.mirror) {
+      warnings.push(`Linha ${rowSpec.row}: espelhada de ${rowSpec.mirrorFrom} (mesma coisa que a Biblioteca faria).`);
+    }
 
     const rowImages = rowSpec.images || images;
 
@@ -48,7 +58,11 @@ function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, creat
       const t = (f * clip.length) / frameCount;
       // cada linha pode ter os SEUS ajustes manuais (north x east independentes)
       const rowOffsets = rowSpec.partOffsets || partOffsets;
-      const pose = applyManualOverrides(computePoseFn(clip, t, rowOffsets), rowOffsets);
+      let pose = applyManualOverrides(computePoseFn(clip, t, rowOffsets), rowOffsets);
+      // Numa linha espelhada, `overlayOffsets` e a camada de correcao DELA por
+      // cima dos ajustes da direcao-fonte (ver rowsFor em renderer/app.js).
+      if (rowSpec.overlayOffsets) pose = applyManualOverrides(pose, rowSpec.overlayOffsets);
+      if (rowSpec.mirror) pose = applyCounterMirror(pose, rowSpec.overlayOffsets);
 
       ctx.save();
       ctx.beginPath();
@@ -61,6 +75,9 @@ function bakeGrid({ computePoseFn, images, pivots, rows, frameCount, size, creat
         x: cellX + cell.bodyAxisX + originOffset.x,
         y: cellY + cell.groundLineY + originOffset.y,
       };
+      // SOUTH/WEST podem ser espelhos de EAST/NORTH -- o espelho vai no ctx,
+      // depois do clip da celula, pra valer so nela (ver mirrorCell).
+      if (rowSpec.mirror) mirrorCell(ctx, cellX + cell.bodyAxisX);
       drawPose(ctx, pose, rowImages, pivots, origin, scale);
       ctx.restore();
     }

@@ -35,14 +35,32 @@ const EXTRA_ANIMATIONS = [
   'Idle Blinking',
 ];
 
-// Nome da subpasta opcional com arte de costas DESENHADA (nao so uma pose
-// diferente da mesma arte da frente). Fica dentro da propria "Vector Parts"
-// pra viajar junto quando alguem copia a pasta do personagem inteira. Aceita
-// "Back" ou "Costas" pra nao forcar padrao de idioma.
-const BACK_ART_DIRNAMES = ['Back', 'Costas'];
+// Subpastas opcionais com arte DESENHADA de uma direcao (nao so uma pose
+// diferente da mesma arte da frente). Ficam dentro da propria "Vector Parts"
+// pra viajar junto quando alguem copia a pasta do personagem inteira. Aceitam
+// nome em ingles ou portugues pra nao forcar padrao de idioma.
+//
+// EAST nao aparece aqui: e a arte base, direto na Vector Parts. As outras
+// tres se sobrepoem a ela peca a peca (ver src/back-art.js).
+const ROW_ART_DIRNAMES = {
+  north: ['Back', 'Costas', 'North', 'Norte'],
+  south: ['South', 'Sul'],
+  west: ['West', 'Oeste'],
+};
 
-function findBackArtDir(vectorPartsDir) {
-  for (const name of BACK_ART_DIRNAMES) {
+// Marcas que identificam a direcao no NOME do arquivo, pra quem prefere
+// deixar tudo solto na Vector Parts ("left-arm-back.png") em vez de criar
+// subpasta.
+const ROW_ART_SUFFIXES = {
+  north: ['back', 'costas', 'north', 'norte'],
+  south: ['south', 'sul'],
+  west: ['west', 'oeste'],
+};
+
+const BACK_ART_DIRNAMES = ROW_ART_DIRNAMES.north; // compatibilidade
+
+function findRowArtDir(vectorPartsDir, row) {
+  for (const name of ROW_ART_DIRNAMES[row] || []) {
     const p = path.join(vectorPartsDir, name);
     if (fs.existsSync(p) && fs.statSync(p).isDirectory()) return p;
   }
@@ -63,10 +81,15 @@ function detectCraftpixClassic(characterDir) {
     vectorPartsDir,
     scmlPath: path.join(vectorPartsDir, scmlFile),
     unitypackagePath: path.join(unityDir, unityFile),
-    backArtDir: findBackArtDir(vectorPartsDir), // null se o personagem nao tem view de costas propria
+    // null em cada direcao que o personagem nao tem desenhada
+    rowArtDirs: {
+      north: findRowArtDir(vectorPartsDir, 'north'),
+      south: findRowArtDir(vectorPartsDir, 'south'),
+      west: findRowArtDir(vectorPartsDir, 'west'),
+    },
     defaultAnimationMap: { ...DEFAULT_ANIMATION_MAP },
     extraAnimations: EXTRA_ANIMATIONS,
   };
 }
 
-module.exports = { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS, BACK_ART_DIRNAMES };
+module.exports = { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS, BACK_ART_DIRNAMES, ROW_ART_DIRNAMES, ROW_ART_SUFFIXES };

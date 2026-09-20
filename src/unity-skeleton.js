@@ -307,9 +307,50 @@ function applyManualOverrides(pose, overrides) {
   return withOverrides;
 }
 
+// Desfaz o espelho da celula PARA ALGUMAS PECAS. Uma peca marcada com
+// `counterMirror` volta ao original em posicao, angulo e na propria arte
+// (negar x e o angulo e inverter o flipX compoe exatamente com o mirrorCell
+// abaixo), entao ela desenha como se a celula nao estivesse espelhada.
+//
+// Existe por causa do efeito classico de espelhar personagem: o corpo vira
+// pro lado certo, mas a espada troca de mao e o escudo pula pro outro ombro.
+// Marcando o que a mao segura (e o proprio braco/mao, senao a arma se solta
+// da mao), a direcao espelhada mantem a arma do mesmo lado.
+function applyCounterMirror(pose, overrides) {
+  if (!overrides || overrides.size === 0) return pose;
+  let touched = false;
+  const out = pose.map((item) => {
+    const o = overrides.get(item.boneName);
+    if (!o || !o.counterMirror) return item;
+    touched = true;
+    return {
+      ...item,
+      world: { ...item.world, x: -item.world.x, angle: -item.world.angle },
+      sprite: { ...item.sprite, flipX: !item.sprite.flipX },
+    };
+  });
+  return touched ? out : pose;
+}
+
+// Espelho horizontal de UMA celula, em torno do eixo do corpo (que e o meio
+// da celula). E exatamente o que a Biblioteca do VTT faz ao expandir uma
+// entrega de duas linhas em quatro: celula por celula, nunca a faixa inteira
+// -- espelhar a faixa inverteria a ordem das colunas e tocaria a passada de
+// tras pra frente. Espelhando em torno do eixo, o eixo do corpo e a linha do
+// chao sobrevivem a inversao ate o pixel.
+//
+// Chamar dentro de um ctx.save()/restore(), antes do drawPose. axisX e o eixo
+// no espaco de coordenadas atual (no bake, cellX + cell.bodyAxisX).
+function mirrorCell(ctx, axisX) {
+  ctx.translate(axisX * 2, 0);
+  ctx.scale(-1, 1);
+}
+
 module.exports = {
   computePose,
   drawPose,
+  mirrorCell,
+  applyCounterMirror,
   CONVENTION,
   quatToAngleDeg,
   applyManualOverrides,

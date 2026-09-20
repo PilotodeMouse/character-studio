@@ -38,7 +38,7 @@ direto do `.scml` (sempre XML texto, nunca falha por isso).
 - `src/scml-parser.js` -- le o `.scml`: pivot/dimensao de cada PNG, `z_index` de camadas (o Unity exporta `m_SortingOrder=0` pra tudo nesses pacotes) e as animacoes completas
 - `src/scml-rig.js` -- pose/animacao direto do `.scml`, sem depender do `.unitypackage`. E o fallback automatico quando o `.prefab` e binario (Archer Guy, Medieval Mage, Barbarian Warrior...)
 - `src/alpha-bounds.js` -- mede a caixa de pixels realmente opacos de cada PNG (a moldura exportada pela Craftpix tem 40-60% de ar), usada pelo auto-fit de escala
-- `src/back-art.js` -- merge de imagens de costas (opcional) com as da frente, peca a peca, pra linha NORTH do bake
+- `src/back-art.js` -- merge da arte de uma direcao (opcional, parcial) com a arte base, peca a peca, e o casamento tolerante de nomes (`left-arm-back.png` -> `Left Arm.png`)
 - `src/craftpix-profile.js` -- detecta a estrutura "craftpix-classic", aplica o mapeamento default de animacoes (`Idle`->idle, `Walking`->walk) e detecta a subpasta opcional de arte de costas (`Vector Parts/Back` ou `Costas`)
 - `src/rig-profile.js` -- fingerprint do rig (nomes de ossos + hierarquia). Formato de saida (tamanho/frames) e herdado por TODOS os personagens do mesmo esqueleto; ajustes manuais por peca ficam isolados por nome de personagem (`characters[nome]`) -- NUNCA vazam entre personagens, mesmo do mesmo rig
 - `src/baker.js` + `src/vtt-standards.js` + `src/validate.js` -- monta o grid final e valida contra o padrao do VTT (`fitScaleForBounds` calcula a escala que faz o personagem caber na celula, so reduz, nunca amplia)
@@ -54,9 +54,29 @@ nao o tamanho real do PNG -- arte de dimensao diferente sai esticada). `Animatio
 `.unitypackage` nao mudam entre skins, sao o rig compartilhado. Use `scripts/export-part-templates.js` pra
 gerar os guias de canvas/pivo de cada peca antes de desenhar.
 
-Pra arte de costas de verdade (nao mirror): crie `PNG/Vector Parts/Back/` (ou `Costas/`) com PNGs dos
-mesmos nomes -- pode ser parcial, so as pecas que voce redesenhar sao usadas, o resto cai pra arte da
-frente automaticamente.
+Pra arte de uma direcao de verdade (nao espelhada): crie `PNG/Vector Parts/Back/` (ou `Costas/`, `South/`,
+`Sul/`, `West/`, `Oeste/`) com PNGs dos mesmos nomes, ou deixe os arquivos soltos na propria `Vector Parts`
+com o sufixo da direcao (`head-back.png`, `body-south.png`). Pode ser parcial: so as pecas que voce
+redesenhar sao usadas, o resto cai pra arte base automaticamente.
+
+## As quatro direcoes
+
+O padrao do VTT quer quatro linhas na ordem fixa NORTH, EAST, SOUTH, WEST, e aceita duas entregas:
+
+- **2 linhas** (padrao): so NORTH e EAST vao no arquivo; a Biblioteca do VTT espelha SOUTH e WEST ao
+  instalar, celula por celula. E o que a maioria dos personagens quer.
+- **4 linhas**: todas no arquivo. Vale a pena quando a luz vem de um lado so, ou quando o personagem tem
+  algo que nao pode trocar de ombro (espada numa mao, tapa-olho, emblema) -- espelhar deixaria o
+  personagem canhoto.
+
+No app, o seletor **Linhas** escolhe a entrega. Cada direcao tem arte e ajustes proprios; SOUTH e WEST
+comecam como espelho de EAST e NORTH e viram "proprias" quando voce carrega arte nelas ou clica em
+"Tornar propria". Uma direcao propria obriga a entrega de 4 linhas.
+
+Espelhar o personagem inteiro troca a espada de mao e joga o escudo pro outro ombro. Por isso as direcoes
+espelhadas vem com **"Manter armas na mesma mao"** ligado: o corpo vira, mas braco, mao e o que ela segura
+ficam do mesmo lado. A direcao espelhada tambem aceita ajuste fino -- arraste a peca no preview dela e o
+ajuste fica so ali, sem tocar na direcao de origem.
 
 ## Uso
 
@@ -70,5 +90,5 @@ frente automaticamente.
 ## Limitacoes conhecidas
 
 - Pacotes com `.prefab` binario carregam pelo `.scml` (fallback automatico), mas nesse modo o amortecimento de balanco (Damp X/Y/Angulo) ainda nao tem efeito
+- Os campos numericos do painel da peca (offset, pivo, escala) valem so pra peca principal da selecao, nao pro grupo do Shift
 - So Idle/Walk sao bakeados por padrao; os outros clips (Slashing, Running, Dying, etc.) existem no rig mas nao tem botao dedicado de export
-- FX/arma com alpha animado por clip (`m_FloatCurves`) ainda nao e lido -- partes como Sword/SlashFX usam so o alpha da pose de bind

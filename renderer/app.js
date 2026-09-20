@@ -8,17 +8,17 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
-const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds } = require('../src/unity-skeleton');
+const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds, mirrorCell, applyCounterMirror } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
 const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeAlphaBoxes } = require('../src/alpha-bounds');
-const { mergeImagesForRow, matchBackFiles } = require('../src/back-art');
-const { computeRigFingerprint, RigProfileStore } = require('../src/rig-profile');
-const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP } = require('../src/craftpix-profile');
+const { mergeImagesForRow, matchRowArtFiles } = require('../src/back-art');
+const { computeRigFingerprint, RigProfileStore, characterOffsetsByRow } = require('../src/rig-profile');
+const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, ROW_ART_SUFFIXES } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT, DEFAULT_SIZE, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
+const { EXPORT, DEFAULT_SIZE, ROWS, MIRRORED_FROM, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 const { listTemplates, loadTemplate } = require('../src/rig-templates');
 const { computeScmlPose, clipsFromScml, computeScmlBounds } = require('../src/scml-rig');
 
@@ -30,9 +30,17 @@ let state = {
   rig: null,
   pivots: new Map(),
   images: new Map(),
-  imagesBack: new Map(), // PNGs de costas (opcional), mesmas chaves de state.images -- ver src/back-art.js
+  // Arte por direcao. state.images e a BASE (a arte de EAST, direto da
+  // Vector Parts); rowArt guarda overrides PARCIAIS das outras tres, que se
+  // sobrepoem a base peca a peca -- ver src/back-art.js.
+  rowArt: { north: new Map(), south: new Map(), west: new Map() },
   alphaBoxes: null, // Map<png, caixa de pixels opacos> -- ver src/alpha-bounds.js
-  previewRow: 'east', // 'east' | 'north' -- so afeta o preview; o bake sempre desenha as duas linhas
+  previewRow: 'east', // qual das 4 direcoes os controles editam (so afeta a edicao; o bake desenha todas)
+  // 'own'  = direcao desenhada, com arte e ajustes proprios
+  // 'mirror' = espelho horizontal da direcao-fonte (SOUTH<-EAST, WEST<-NORTH),
+  //            que e o que a Biblioteca do VTT faz numa entrega de 2 linhas.
+  // NORTH e EAST sao sempre 'own': o padrao exige as duas desenhadas.
+  rowModes: { south: 'mirror', west: 'mirror' },
   zIndexByName: new Map(),
   rigId: null,
   outputFolder: null,
@@ -40,12 +48,12 @@ let state = {
   // desmontar o EAST e vice-versa. `partOffsets` e so um atalho pro mapa da
   // vista que esta sendo editada (state.previewRow), entao todo o codigo de
   // arrastar/camadas/pivo continua igual e passa a valer so pra vista ativa.
-  partOffsetsByRow: { east: new Map(), north: new Map() }, // boneName -> {dx,dy,dangle,...}
+  partOffsetsByRow: { north: new Map(), east: new Map(), south: new Map(), west: new Map() },
   get partOffsets() {
-    return this.partOffsetsByRow[this.previewRow === 'north' ? 'north' : 'east'];
+    return this.partOffsetsByRow[this.previewRow] || this.partOffsetsByRow.east;
   },
   set partOffsets(m) {
-    this.partOffsetsByRow[this.previewRow === 'north' ? 'north' : 'east'] = m;
+    this.partOffsetsByRow[this.previewRow] = m;
   },
   selectedBone: null,
   multiSel: new Set(), // selecao multipla (Shift): sempre contem selectedBone quando ha selecao
@@ -70,8 +78,10 @@ let state = {
   // que permite o botao "voltar ao padrao" reler o arquivo do disco.
   artSourceDir: null,
   artPartNames: [], // todos os PNGs da pasta de origem (inclusive os que nenhum osso usa)
-  partArtOverridesBack: new Map(), // idem, mas da arte de COSTAS (state.imagesBack)
-  partArtOverrides: new Map(), // partName -> caminho escolhido pelo usuario, so pra UI/status (a peca em si ja vive em state.images)
+  // partName -> caminho escolhido pelo usuario, so pra UI/status (a peca em
+  // si ja vive em state.images / state.rowArt). Uma gaveta por direcao.
+  partArtOverridesByRow: { north: new Map(), east: new Map(), south: new Map(), west: new Map() },
+  rowArtSources: { north: [], south: [], west: [] }, // [pasta, exigeSufixo] de onde a arte de cada direcao veio
 };
 
 function log(msg, cls) {
@@ -189,9 +199,9 @@ function renderTemplatePartsList() {
   }
 }
 
-// Quais trocas de arte valem pra vista que esta sendo editada.
+// Quais trocas de arte valem pra direcao que esta sendo editada.
 function artOverridesForView() {
-  return state.previewRow === 'north' ? state.partArtOverridesBack : state.partArtOverrides;
+  return state.partArtOverridesByRow[state.previewRow] || state.partArtOverridesByRow.east;
 }
 
 function refreshAfterArtChange() {
@@ -224,35 +234,136 @@ function refreshAfterArtChange() {
 //
 // A troca e so em memoria: nada e escrito na pasta do personagem, e o bake
 // usa a arte que esta carregada. Recarregar o personagem volta tudo ao disco.
+// Peca que a mao segura (arma, escudo, efeito) -- por exclusao: o que nao e
+// parte do corpo. Assim Axe/Spear/Bow/Staff entram sozinhos, sem lista.
+// Compara por PALAVRA inteira ("Handaxe" e arma, nao mao). Escrito com split
+// em vez de regex de propósito: expressao com \b nesta base ja foi corrompida
+// duas vezes por edicao automatizada (o \b virando byte 0x08) -- ver a
+// checagem de caractere de controle em scripts/check-renderer-wiring.js.
+const BODY_WORDS = new Set(['arm', 'hand', 'leg', 'foot', 'feet', 'body', 'torso', 'hip', 'neck', 'head', 'face']);
+
+function wordsOf(name) {
+  return name.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+}
+
+function isHeldItemName(n) {
+  return !wordsOf(n).some((w) => BODY_WORDS.has(w));
+}
+
+function isLimbName(n) {
+  return wordsOf(n).some((w) => w === 'arm' || w === 'hand');
+}
+
+// Direcoes que mostram as COSTAS. Importa pra decidir se as pecas Face* da
+// frente entram (ver mergeImagesForRow) -- de costas o rosto nao existe.
+const BACK_ROWS = new Set(['north', 'west']);
+
+// Mapa de arte daquela direcao. EAST e a base, as outras sao overrides.
+function rowArtMap(row) {
+  return row === 'east' ? state.images : state.rowArt[row];
+}
+
+// Conjunto de imagens efetivo de uma direcao: a base com os overrides
+// daquela direcao por cima, peca a peca.
+function imagesForRow(row) {
+  if (row === 'east') return state.images;
+  return mergeImagesForRow(state.images, state.rowArt[row], { hideFace: BACK_ROWS.has(row) });
+}
+
+// A direcao de onde uma linha tira pose/arte: ela mesma, ou a fonte do
+// espelho quando esta em modo 'mirror' (SOUTH<-EAST, WEST<-NORTH).
+function sourceRowFor(row) {
+  return state.rowModes[row] === 'mirror' ? MIRRORED_FROM[row] : row;
+}
+
+function isMirrored(row) {
+  return state.rowModes[row] === 'mirror';
+}
+
+// Numa direcao espelhada, os ajustes DELA sao uma camada de CORRECAO por cima
+// dos da direcao-fonte. Pra exibir (camadas, hit-test) interessa a soma; pra
+// editar, so a camada de cima -- que e o que `state.partOffsets` devolve.
+function offsetsForDisplay(row) {
+  const src = sourceRowFor(row);
+  if (src === row) return state.partOffsetsByRow[row];
+  const merged = new Map([...state.partOffsetsByRow[src]].map(([k, v]) => [k, { ...v }]));
+  for (const [k, v] of state.partOffsetsByRow[row]) merged.set(k, { ...(merged.get(k) || {}), ...v });
+  return merged;
+}
+
+function hasKeepHandsSide(row) {
+  for (const o of state.partOffsetsByRow[row].values()) if (o.counterMirror) return true;
+  return false;
+}
+
+// Marca (ou desmarca) as pecas que NAO devem acompanhar o espelho: o que a mao
+// segura e o proprio braco/mao, senao a arma se solta da mao. Ver
+// applyCounterMirror em src/unity-skeleton.js.
+function setKeepHandsSide(row, on) {
+  const overlay = state.partOffsetsByRow[row];
+  for (const bone of state.rig.bones.values()) {
+    if (!bone.sprite || !bone.sprite.pngName) continue;
+    const n = bone.name;
+    if (!isHeldItemName(n) && !isLimbName(n)) continue;
+    const entry = { ...(overlay.get(n) || {}) };
+    if (on) entry.counterMirror = true;
+    else delete entry.counterMirror;
+    if (Object.keys(entry).length) overlay.set(n, entry);
+    else overlay.delete(n);
+  }
+}
+
+// Quais direcoes o arquivo vai ter: 2 (a Biblioteca espelha SOUTH/WEST ao
+// instalar) ou 4 (todas no arquivo). Uma direcao com arte/ajuste proprio
+// obriga as 4 -- um arquivo de 2 linhas nao teria onde carrega-la.
+function deliveredRows() {
+  return ROWS.slice(0, currentRowCount());
+}
+
+function currentRowCount() {
+  const wanted = parseInt(document.getElementById('sel-row-count').value, 10) === 4 ? 4 : 2;
+  const needsFour = ['south', 'west'].some((r) => state.rowModes[r] === 'own');
+  return needsFour ? 4 : wanted;
+}
+
 async function onSwapPartArt(partName) {
   const filePath = await ipcRenderer.invoke('select-image-file');
   if (!filePath) return;
-  // Cada vista tem a SUA arte: com NORTH ativo a troca vai pra arte de costas,
-  // com EAST pra de frente -- uma nao mexe na outra.
-  const north = state.previewRow === 'north';
-  (north ? state.partArtOverridesBack : state.partArtOverrides).set(partName, filePath);
-  (north ? state.imagesBack : state.images).set(partName, await loadImageAnyFormat(filePath));
+  // Cada direcao tem a SUA arte -- trocar numa nao mexe nas outras. Carregar
+  // arte numa direcao espelhada e o mesmo que dizer "quero desenhar esta",
+  // entao ela deixa de ser espelho.
+  const row = state.previewRow;
+  if (isMirrored(row)) setRowMode(row, 'own');
+  state.partArtOverridesByRow[row].set(partName, filePath);
+  rowArtMap(row).set(partName, await loadImageAnyFormat(filePath));
   refreshAfterArtChange();
-  log(`Peca "${partName}" (${north ? 'costas' : 'frente'}) trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
+  log(`Peca "${partName}" (${row.toUpperCase()}) trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
 }
 
 async function onResetPartArt(partName) {
   if (!state.artSourceDir) return;
-  if (state.previewRow === 'north') {
-    state.partArtOverridesBack.delete(partName);
-    state.imagesBack.delete(partName);
-    // volta pra arte de costas do disco (se existia), senao cai pra da frente
-    for (const [dir, requireSuffix] of state.backSources || []) {
-      const file = matchBackFiles(fs.readdirSync(dir), [partName], requireSuffix).get(partName);
-      if (file) { state.imagesBack.set(partName, await loadImage(path.join(dir, file))); break; }
-    }
+  const row = state.previewRow;
+  state.partArtOverridesByRow[row].delete(partName);
+
+  if (row === 'east') {
+    // EAST e a arte base: volta direto do arquivo da Vector Parts.
+    const p = path.join(state.artSourceDir, partName);
+    if (fs.existsSync(p)) state.images.set(partName, await loadImage(p));
+    else state.images.delete(partName);
     refreshAfterArtChange();
     return;
   }
-  state.partArtOverrides.delete(partName);
-  const p = path.join(state.artSourceDir, partName);
-  if (fs.existsSync(p)) state.images.set(partName, await loadImage(p));
-  else state.images.delete(partName);
+
+  // Nas outras, volta pra arte daquela direcao que veio do disco (se havia);
+  // sem ela, a peca simplesmente cai pra base de novo.
+  state.rowArt[row].delete(partName);
+  for (const [dir, requireSuffix] of state.rowArtSources[row] || []) {
+    const file = matchRowArtFiles(fs.readdirSync(dir), [partName], ROW_ART_SUFFIXES[row], requireSuffix).get(partName);
+    if (file) {
+      state.rowArt[row].set(partName, await loadImage(path.join(dir, file)));
+      break;
+    }
+  }
   refreshAfterArtChange();
 }
 
@@ -264,7 +375,8 @@ async function loadFromDetected(detected, displayLabel) {
   // personagem que estava aberto continuavam vivos no state e desmontavam o
   // proximo a ser importado -- os offsets sao em pixels da arte de UM
   // personagem, nao tem sentido nenhum no outro.
-  state.partOffsetsByRow = { east: new Map(), north: new Map() };
+  state.partOffsetsByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
+  state.rowModes = { south: 'mirror', west: 'mirror' };
   state.undoStack = [];
   state.redoStack = [];
   state.multiSel = new Set();
@@ -272,14 +384,13 @@ async function loadFromDetected(detected, displayLabel) {
   state.selectedDampBone = null;
   state.lastPose = null;
   state.savedScale = null;
-  state.partArtOverrides = new Map();
-  state.partArtOverridesBack = new Map();
+  state.partArtOverridesByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
   state.artSourceDir = detected.vectorPartsDir;
   state.artPartNames = fs
     .readdirSync(detected.vectorPartsDir)
     .filter((f) => f.toLowerCase().endsWith('.png'))
-    // arte de costas solta na Vector Parts ("*-back.png") nao e variante da frente
-    .filter((f) => !/[-_ ]?(back|costas)\.png$/i.test(f))
+    // arte de outra direcao solta na Vector Parts ("*-back.png") nao e variante
+    .filter((f) => !/[-_ ]?(back|costas|north|norte|south|sul|west|oeste)\.png$/i.test(f))
     .sort();
 
   const scmlText = fs.readFileSync(detected.scmlPath, 'utf8');
@@ -299,21 +410,28 @@ async function loadFromDetected(detected, displayLabel) {
     if (fs.existsSync(p)) state.images.set(name, await loadImage(p));
   }
 
-  // Arte de costas e OPCIONAL e PARCIAL: casa por nome de arquivo com a arte
-  // da frente (mesmo pivo/dimensao do .scml), e so as pecas que existirem la
-  // dentro sao substituidas -- ver src/back-art.js e src/craftpix-profile.js.
-  state.imagesBack = new Map();
-  // Pasta Back/Costas (nomes iguais ou tolerantes) ou arquivos "*-back.png"
-  // soltos na propria Vector Parts.
-  const backSources = [];
-  state.backSources = backSources;
-  if (detected.backArtDir) backSources.push([detected.backArtDir, false]);
-  backSources.push([detected.vectorPartsDir, true]);
-  for (const [dir, requireSuffix] of backSources) {
-    const matches = matchBackFiles(fs.readdirSync(dir), [...state.pivots.keys()], requireSuffix);
-    for (const [part, file] of matches) {
-      if (!state.imagesBack.has(part)) state.imagesBack.set(part, await loadImage(path.join(dir, file)));
+  // A arte das outras direcoes e OPCIONAL e PARCIAL: casa por nome de arquivo
+  // com a arte base (mesmo pivo/dimensao do .scml), e so as pecas que
+  // existirem sao substituidas -- ver src/back-art.js e src/craftpix-profile.js.
+  // Cada direcao aceita uma subpasta propria (Back/Costas, South/Sul,
+  // West/Oeste) ou arquivos marcados soltos na Vector Parts ("*-back.png").
+  state.rowArt = { north: new Map(), south: new Map(), west: new Map() };
+  state.rowArtSources = { north: [], south: [], west: [] };
+  for (const row of ['north', 'south', 'west']) {
+    const sources = state.rowArtSources[row];
+    const dir = detected.rowArtDirs && detected.rowArtDirs[row];
+    if (dir) sources.push([dir, false]);
+    sources.push([detected.vectorPartsDir, true]);
+    for (const [from, requireSuffix] of sources) {
+      const matches = matchRowArtFiles(fs.readdirSync(from), [...state.pivots.keys()], ROW_ART_SUFFIXES[row], requireSuffix);
+      for (const [part, file] of matches) {
+        if (!state.rowArt[row].has(part)) state.rowArt[row].set(part, await loadImage(path.join(from, file)));
+      }
     }
+  }
+  // Uma direcao que veio desenhada do disco nao e espelho de ninguem.
+  for (const row of ['south', 'west']) {
+    if (state.rowArt[row].size) state.rowModes[row] = 'own';
   }
 
   // Le pixel a pixel, entao roda UMA vez por pacote e fica em cache no state:
@@ -363,7 +481,10 @@ async function loadFromDetected(detected, displayLabel) {
 
   document.getElementById('pack-info').textContent =
     `${displayLabel} - ${state.rig.clips.length} animacoes, ${state.images.size} PNGs` +
-    (state.imagesBack.size ? `, ${state.imagesBack.size} PNGs de costas` : '');
+    ['north', 'south', 'west']
+      .filter((r) => state.rowArt[r].size)
+      .map((r) => `, ${state.rowArt[r].size} PNGs de ${r.toUpperCase()}`)
+      .join('');
   document.getElementById('config-section').style.display = 'block';
   document.getElementById('preview-block').style.display = 'block';
 
@@ -371,7 +492,7 @@ async function loadFromDetected(detected, displayLabel) {
   // costas de verdade pra olhar -- sem isso, north e sempre identico a east.
   state.previewRow = 'east';
   document.getElementById('preview-sel-row').value = 'east';
-  document.getElementById('preview-chk-side').checked = state.imagesBack.size > 0;
+  document.getElementById('preview-chk-side').checked = true;
   updateRowControls();
 
   const clipNames = state.rig.clips.map((c) => c.name).filter((n) => n !== 'Base');
@@ -400,9 +521,17 @@ async function loadFromDetected(detected, displayLabel) {
   // So quando o NORTH ainda nao tem ajuste nenhum: se o perfil trouxe algo
   // salvo, a ordem e do usuario e nao pode ser sobrescrita. O botao continua
   // ali pra reaplicar, e o Ctrl+Z nao desfaz isso (e o estado inicial).
-  if (state.imagesBack.size && state.partOffsetsByRow.north.size === 0) {
-    applyBackViewDepth(state.partOffsetsByRow.north);
-    log('Vista de costas: profundidade das camadas ja espelhada automaticamente.', 'ok');
+  // Direcao espelhada ja nasce com as armas do lado certo -- espelhar o
+  // personagem inteiro e o que faz a espada trocar de mao, e ninguem quer isso.
+  for (const row of ['south', 'west']) {
+    if (isMirrored(row) && state.partOffsetsByRow[row].size === 0) setKeepHandsSide(row, true);
+  }
+
+  for (const row of ['north', 'west']) {
+    if (state.rowArt[row].size && state.partOffsetsByRow[row].size === 0) {
+      applyBackViewDepth(state.partOffsetsByRow[row]);
+      log(`${row.toUpperCase()}: profundidade das camadas ja espelhada automaticamente.`, 'ok');
+    }
   }
 
   applyAutoFitScale();
@@ -470,6 +599,7 @@ function applyRigProfileIfKnown() {
   if (profile.size) document.getElementById('sel-size').value = profile.size;
   if (profile.framesIdle) document.getElementById('num-frames-idle').value = profile.framesIdle;
   if (profile.framesWalk) document.getElementById('num-frames-walk').value = profile.framesWalk;
+  if (profile.rowCount) document.getElementById('sel-row-count').value = String(profile.rowCount);
   document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
   document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
 
@@ -480,10 +610,11 @@ function applyRigProfileIfKnown() {
   const notes = [];
 
   if (mine) {
-    state.partOffsetsByRow = {
-      east: new Map(Object.entries(mine.partOffsets || {})),
-      north: new Map(Object.entries(mine.partOffsetsNorth || {})),
-    };
+    const saved = characterOffsetsByRow(mine);
+    state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, new Map(Object.entries(saved[r] || {}))]));
+    for (const r of ['south', 'west']) {
+      if (mine.rowModes && mine.rowModes[r]) state.rowModes[r] = mine.rowModes[r];
+    }
     if (mine.scale) {
       state.savedScale = mine.scale;
       document.getElementById('num-scale').value = mine.scale;
@@ -517,11 +648,11 @@ function applyRigProfileIfKnown() {
       const source = profile.characters[from];
       if (!source) return;
       pushUndo();
-      state.partOffsetsByRow = {
-        east: new Map(Object.entries(source.partOffsets || {})),
-        north: new Map(Object.entries(source.partOffsetsNorth || {})),
-      };
+      const sourceByRow = characterOffsetsByRow(source);
+      state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, new Map(Object.entries(sourceByRow[r] || {}))]));
+      if (source.rowModes) state.rowModes = { south: 'mirror', west: 'mirror', ...source.rowModes };
       selectPart(null);
+      updateRowControls();
       onPreviewTime();
       log(`Ajustes manuais de "${from}" copiados para este personagem.`, 'warn');
     });
@@ -559,31 +690,41 @@ function readConfig() {
     scale: parseFloat(document.getElementById('num-scale').value) || 1,
     offsetX: parseFloat(document.getElementById('num-offset-x').value) || 0,
     offsetY: parseFloat(document.getElementById('num-offset-y').value) || 0,
+    rowCount: currentRowCount(),
     characterName: toKebabCase(document.getElementById('txt-character-name').value),
   };
 }
 
-// hasArt da linha NORTH agora reflete se existe ARTE de costas de verdade
-// (state.imagesBack), nao mais o checkbox "Pacote tem view de costas" --
-// esse checkbox e o select ao lado continuam servindo pra escolher uma
-// ANIMACAO diferente pra north (raro, mas alguns clips tem uma variante "de
-// costas"), independente de ter arte propria ou nao. Sem arte de costas, uma
-// clip diferente sozinha nao ajuda -- e por isso que so a arte liga o hasArt.
+// As linhas do arquivo, na ordem fixa do padrao (NORTH, EAST, SOUTH, WEST).
+// Uma linha em modo espelho nao tem nada de seu: tira clip, arte e ajustes da
+// direcao-fonte e so marca `mirror`, que o baker aplica no proprio ctx.
+//
+// hasArt da linha NORTH reflete se existe ARTE de costas de verdade, nao o
+// checkbox "Pacote tem view de costas" -- esse checkbox e o select ao lado
+// servem pra escolher uma ANIMACAO diferente pra north (raro, mas alguns
+// clips tem uma variante "de costas"). Sem arte de costas, uma clip diferente
+// sozinha nao ajuda, e por isso so a arte liga o hasArt.
 function rowsFor(cfg, kind) {
   const eastClip = kind === 'idle' ? cfg.idleClip : cfg.walkClip;
-  const hasBackArt = state.imagesBack.size > 0;
   const northClip = (cfg.hasNorthView && cfg.northClip) || eastClip;
-  return [
-    {
-      row: 'north',
-      clip: northClip,
-      hasArt: hasBackArt,
-      images: hasBackArt ? mergeImagesForRow(state.images, state.imagesBack) : undefined,
-      // sem arte de costas a linha e so a pose de EAST -> usa os ajustes de EAST
-      partOffsets: hasBackArt ? state.partOffsetsByRow.north : state.partOffsetsByRow.east,
-    },
-    { row: 'east', clip: eastClip, hasArt: true, partOffsets: state.partOffsetsByRow.east },
-  ];
+  const clipFor = { north: northClip, east: eastClip, south: eastClip, west: northClip };
+
+  return deliveredRows().map((row) => {
+    const src = sourceRowFor(row);
+    const ownArt = src === 'east' || state.rowArt[src].size > 0;
+    return {
+      row,
+      clip: clipFor[src],
+      hasArt: ownArt,
+      images: src === 'east' ? undefined : imagesForRow(src),
+      // sem arte propria a linha e so a pose de EAST -> usa os ajustes de EAST
+      partOffsets: ownArt ? state.partOffsetsByRow[src] : state.partOffsetsByRow.east,
+      // numa linha espelhada, os ajustes DELA sao correcao por cima da fonte
+      overlayOffsets: src === row ? null : state.partOffsetsByRow[row],
+      mirror: isMirrored(row),
+      mirrorFrom: MIRRORED_FROM[row],
+    };
+  });
 }
 
 // Qual clip o preview esta mostrando. Antes era sempre o Idle, e por isso
@@ -597,18 +738,44 @@ function previewBaseClip(cfg) {
   return byName || cfg.idleClip;
 }
 
-// Seletor "Editando" e "Lado a lado" so aparecem quando existe arte de costas.
+// Reflete na UI quantas linhas o arquivo vai ter e o estado da direcao em
+// edicao (espelhada ou propria).
 function updateRowControls() {
-  const has = state.imagesBack.size > 0;
-  document.getElementById('preview-sel-row').style.display = has ? '' : 'none';
-  document.getElementById('preview-side-label').style.display = has ? '' : 'none';
-  if (!has && state.previewRow === 'north') {
-    state.previewRow = 'east';
-    document.getElementById('preview-sel-row').value = 'east';
+  const rowCountSel = document.getElementById('sel-row-count');
+  const forcedFour = ['south', 'west'].some((r) => state.rowModes[r] === 'own');
+  if (forcedFour) rowCountSel.value = '4';
+  rowCountSel.disabled = forcedFour;
+
+  const delivered = deliveredRows();
+  // So da pra editar uma direcao que existe no arquivo.
+  if (!delivered.includes(state.previewRow)) setEditingRow('east');
+
+  const sel = document.getElementById('preview-sel-row');
+  for (const opt of sel.options) opt.disabled = !delivered.includes(opt.value);
+  sel.value = state.previewRow;
+
+  const row = state.previewRow;
+  const mirrorable = MIRRORED_FROM[row];
+  const box = document.getElementById('row-mode-box');
+  box.style.display = mirrorable ? 'flex' : 'none';
+  if (mirrorable) {
+    const mir = isMirrored(row);
+    document.getElementById('row-mode-hint').textContent = mir
+      ? `${row.toUpperCase()} e o espelho de ${mirrorable.toUpperCase()} -- o mesmo que a Biblioteca do VTT faria. Nao tem arte nem ajuste proprio.`
+      : `${row.toUpperCase()} e desenhada: tem arte e ajustes so dela, e o arquivo sai com as 4 linhas.`;
+    const btn = document.getElementById('btn-row-mode');
+    btn.textContent = mir ? 'Tornar propria (desenhar esta direcao)' : `Voltar a espelhar de ${mirrorable.toUpperCase()}`;
+    // A correcao de lado das armas so existe numa direcao espelhada.
+    document.getElementById('keep-hands-label').style.display = mir ? '' : 'none';
+    document.getElementById('chk-keep-hands').checked = hasKeepHandsSide(row);
   }
+  document.getElementById('row-count-note').textContent =
+    currentRowCount() === 2
+      ? 'A Biblioteca do VTT espelha SOUTH e WEST ao instalar.'
+      : 'As 4 direcoes vao no arquivo.';
 }
 
-// Troca a vista que os controles (arrastar, camadas, pivo, arte) editam.
+// Troca a direcao que os controles (arrastar, camadas, pivo, arte) editam.
 function setEditingRow(row) {
   if (state.previewRow === row) return;
   state.previewRow = row;
@@ -616,6 +783,29 @@ function setEditingRow(row) {
   selectPart(null);
   renderLayersList();
   renderTemplatePartsList();
+}
+
+// 'own' faz a direcao deixar de ser espelho: ela parte de uma COPIA dos
+// ajustes da fonte, pra comecar igual a ela em vez de crua, e dali o usuario
+// troca a arte peca a peca. 'mirror' devolve a direcao pro espelho e joga
+// fora arte e ajustes proprios (por isso passa pelo pushUndo).
+function setRowMode(row, mode) {
+  if (!MIRRORED_FROM[row] || state.rowModes[row] === mode) return;
+  pushUndo();
+  const src = MIRRORED_FROM[row];
+  if (mode === 'own') {
+    state.partOffsetsByRow[row] = new Map([...state.partOffsetsByRow[src]].map(([k, v]) => [k, { ...v }]));
+  } else {
+    state.partOffsetsByRow[row] = new Map();
+    state.rowArt[row] = new Map();
+    state.partArtOverridesByRow[row] = new Map();
+    setKeepHandsSide(row, true);
+  }
+  state.rowModes[row] = mode;
+  updateRowControls();
+  renderLayersList();
+  renderTemplatePartsList();
+  onPreviewTime();
 }
 
 function onPreviewTime() {
@@ -628,26 +818,32 @@ function onPreviewTime() {
   const clampedT = Math.min(parseFloat(slider.value), baseClip.length);
   document.getElementById('preview-time-label').textContent = `${clampedT.toFixed(2)}s / ${baseClip.length.toFixed(2)}s`;
 
-  // Com arte de costas, da pra ver NORTH (esquerda) e EAST (direita) juntos.
-  // A vista ativa (state.previewRow) e a que os controles editam e e sempre
-  // desenhada POR ULTIMO -- state.lastPose/lastOrigin/lastCfg (usados pelo
-  // hit-test do mouse) ficam sendo dela.
-  const hasNorth = state.imagesBack.size > 0;
-  const side = hasNorth && document.getElementById('preview-chk-side').checked;
-  const active = hasNorth && state.previewRow === 'north' ? 'north' : 'east';
-  const shown = side ? ['north', 'east'] : [active];
-  const canvasNorth = document.getElementById('preview-canvas-north');
-  const canvasEast = document.getElementById('preview-canvas');
-  canvasNorth.style.display = shown.includes('north') ? '' : 'none';
-  canvasEast.style.display = shown.includes('east') ? '' : 'none';
-  canvasNorth.classList.toggle('active-row', side && active === 'north');
-  canvasEast.classList.toggle('active-row', side && active === 'east');
+  // "Lado a lado" mostra todas as direcoes que vao pro arquivo, na ordem do
+  // padrao. A direcao ativa (state.previewRow) e a que os controles editam e
+  // e sempre desenhada POR ULTIMO -- state.lastPose/lastOrigin/lastCfg
+  // (usados pelo hit-test do mouse) ficam sendo dela.
+  const delivered = deliveredRows();
+  const active = state.previewRow;
+  const side = document.getElementById('preview-chk-side').checked;
+  const shown = side ? delivered : [active];
+  for (const row of ROWS) {
+    const canvas = canvasForRow(row);
+    canvas.style.display = shown.includes(row) ? '' : 'none';
+    canvas.classList.toggle('active-row', side && row === active);
+    canvas.classList.toggle('mirrored-row', isMirrored(row));
+  }
   for (const r of [...shown.filter((x) => x !== active), active]) {
-    drawRow(r === 'north' ? canvasNorth : canvasEast, r, cfg, baseClip, clampedT, active);
+    drawRow(canvasForRow(r), r, cfg, baseClip, clampedT, active);
   }
 }
 
-// Desenha UMA vista (north ou east) num canvas de preview.
+// EAST fica no canvas historico (#preview-canvas): um monte de codigo (zoom,
+// fundo, listeners) ja aponta pra ele pelo id.
+function canvasForRow(row) {
+  return document.getElementById(row === 'east' ? 'preview-canvas' : `preview-canvas-${row}`);
+}
+
+// Desenha UMA direcao num canvas de preview.
 function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // O canvas de preview usa exatamente as mesmas dimensoes e a mesma linha
   // do chao (groundLineY) que o bake de verdade (src/baker.js), assim o que
@@ -684,13 +880,20 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // sempre desenha as duas linhas (north e east) de qualquer forma. Existe
   // so pra dar pra conferir o alinhamento da arte de costas ANTES de bakear
   // 8 frames as cegas.
-  const isNorth = row === 'north';
-  const offsets = state.partOffsetsByRow[row];
-  const previewClip = isNorth ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
-  const previewImages = isNorth ? mergeImagesForRow(state.images, state.imagesBack) : state.images;
+  // Direcao espelhada nao tem nada de seu: mostra a fonte, invertida.
+  const src = sourceRowFor(row);
+  const offsets = state.partOffsetsByRow[src];
+  const showsBack = BACK_ROWS.has(src);
+  const previewClip = showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
+  const previewImages = imagesForRow(src);
 
   const rawPose = computePoseFn(previewClip, clampedT, offsets);
   let pose = applyManualOverrides(rawPose, offsets);
+  // Mesmo encadeamento do bake (ver src/baker.js): correcao da propria
+  // direcao por cima da fonte, depois o contra-espelho das pecas marcadas.
+  const overlay = src === row ? null : state.partOffsetsByRow[row];
+  if (overlay) pose = applyManualOverrides(pose, overlay);
+  if (isMirrored(row)) pose = applyCounterMirror(pose, overlay);
 
   // "Ocultas": arma e SlashFX ficam com alpha 0 fora dos clips de ataque (o
   // prefab grava 0 no bind e quem acende e uma curva de m_Color.a). Sem isso
@@ -705,6 +908,9 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // exatamente como o bakeGrid faz -- assim preview e bake percorrem o mesmo
   // caminho e nao tem como divergirem.
   ctx.save();
+  // O espelho entra no ctx, igualzinho ao do bake (ver mirrorCell/baker.js),
+  // pra o que se ve aqui ser o que sai no .webp.
+  if (isMirrored(row)) mirrorCell(ctx, cell.bodyAxisX);
   drawPose(ctx, pose, previewImages, state.pivots, origin, cfg.scale, row === active ? state.multiSel : null);
   ctx.restore();
 
@@ -772,11 +978,16 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
     const usable = `altura util ${cell.groundLineY - 4} px`;
     ctx.fillText(usable, cell.w - ctx.measureText(usable).width - 6, cell.groundLineY + 4);
     ctx.fillText(`${cell.w}x${cell.h}`, 6, 6);
+    // Qual direcao e esta -- com 4 celulas na tela, sem rotulo nao da pra saber.
+    const label = row.toUpperCase() + (isMirrored(row) ? ` (espelho de ${MIRRORED_FROM[row].toUpperCase()})` : '');
+    ctx.fillStyle = '#5b8cff';
+    ctx.fillText(label, 6, 6 + fs + 4);
 
     ctx.restore();
   }
 
   state.lastPose = pose;
+  state.lastCell = cell;
   state.lastOrigin = origin;
   state.lastCfg = cfg;
 }
@@ -793,7 +1004,7 @@ function cloneOffsetMap(m) {
   return new Map([...m].map(([k, v]) => [k, { ...v }]));
 }
 function snapshotOffsets() {
-  return { east: cloneOffsetMap(state.partOffsetsByRow.east), north: cloneOffsetMap(state.partOffsetsByRow.north) };
+  return Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap(state.partOffsetsByRow[r])]));
 }
 
 // Chamar ANTES de mudar os ajustes. `key` agrupa mudancas em sequencia (ex:
@@ -812,7 +1023,7 @@ function pushUndo(key = null) {
 }
 
 function restoreSnapshot(snap) {
-  state.partOffsetsByRow = { east: cloneOffsetMap(snap.east), north: cloneOffsetMap(snap.north) };
+  state.partOffsetsByRow = Object.fromEntries(ROWS.map((r) => [r, cloneOffsetMap(snap[r] || new Map())]));
   lastUndoKey = null;
   const keep = new Set(state.multiSel);
   selectPart(state.selectedBone); // reatualiza campos + camadas
@@ -930,9 +1141,11 @@ function currentLayers(offsets = state.partOffsets) {
 
 function renderLayersList() {
   if (!state.rig) return;
+  const layerOffsets = offsetsForDisplay(state.previewRow);
   const mirrorBtn = document.getElementById('btn-mirror-depth');
-  mirrorBtn.style.display = state.previewRow === 'north' && state.imagesBack.size ? '' : 'none';
-  const layers = currentLayers();
+  // so nas direcoes que mostram as costas, e so quando editaveis
+  mirrorBtn.style.display = BACK_ROWS.has(state.previewRow) && !isMirrored(state.previewRow) ? '' : 'none';
+  const layers = currentLayers(layerOffsets);
   const el = document.getElementById('layers-list');
   el.innerHTML = '';
   // de cima (frente) pra baixo (fundo) na lista, como no Photoshop
@@ -1015,8 +1228,7 @@ function backViewDepthOrder(layers) {
     // fica entre a camera e o objeto. De frente o escudo cobre o braco (a
     // face dele aponta pra camera); de costas e o braco que cobre o escudo.
     // Vale pra arma tambem -- a mao aparece por cima do punho.
-    const isHeldItem = (n) => !/\b(arm|hand|leg|foot|body|torso|hip|neck|head|face)\b/i.test(n);
-    const itemsToBack = (block) => [...block.filter(isHeldItem), ...block.filter((n) => !isHeldItem(n))];
+    const itemsToBack = (block) => [...block.filter(isHeldItemName), ...block.filter((n) => !isHeldItemName(n))];
     const wasBehind = itemsToBack(layers.slice(0, bodyIdx).filter(movable));
     const wasInFront = itemsToBack(layers.slice(bodyIdx + 1).filter(movable));
     // pernas trocam de lado entre si, mas continuam ATRAS do corpo: elas nao
@@ -1104,8 +1316,12 @@ function canvasEventToLocalCraftpix(e) {
   const canvas = e.currentTarget && e.currentTarget.tagName === 'CANVAS' ? e.currentTarget : dragCanvas || document.getElementById('preview-canvas');
   const rect = canvas.getBoundingClientRect();
   const pxScale = canvas.width / rect.width;
-  const mx = (e.clientX - rect.left) * pxScale;
+  let mx = (e.clientX - rect.left) * pxScale;
   const my = (e.clientY - rect.top) * pxScale;
+  // state.lastPose de uma direcao espelhada e a pose ANTES do espelho (o
+  // espelho e do ctx, no desenho). Pro hit-test cair na peca certa, o X do
+  // mouse volta pro mesmo espaco -- em torno do eixo do corpo, como mirrorCell.
+  if (isMirrored(state.previewRow) && state.lastCell) mx = state.lastCell.bodyAxisX * 2 - mx;
   const cfg = state.lastCfg || { scale: 1 };
   const origin = state.lastOrigin || { x: canvas.width / 2, y: canvas.height * 0.85 };
   return {
@@ -1122,11 +1338,12 @@ function canvasEventToLocalCraftpix(e) {
 let dragCanvas = null; // canvas onde o arrasto comecou (o mousemove vem da window)
 
 function onPreviewCanvasMouseDown(e) {
-  // Clicar na vista que NAO e a ativa so passa a edita-la (e redesenha, pra
+  // Clicar na direcao que NAO e a ativa so passa a edita-la (e redesenha, pra
   // lastPose/lastOrigin passarem a ser dela) -- o hit-test roda ja nela.
-  const row = e.currentTarget.dataset.row === 'north' ? 'north' : 'east';
+  const row = e.currentTarget.dataset.row;
   if (row !== state.previewRow) {
     setEditingRow(row);
+    updateRowControls();
     onPreviewTime();
   }
   dragCanvas = e.currentTarget;
@@ -1177,6 +1394,9 @@ function onPreviewCanvasMouseDown(e) {
 function onPreviewCanvasMouseMove(e) {
   if (!state.drag) return;
   const { x, y } = canvasEventToLocalCraftpix(e);
+  // Numa direcao espelhada o X ja vem desespelhado de canvasEventToLocalCraftpix
+  // (pro hit-test bater com state.lastPose), entao o delta ja esta no espaco
+  // certo -- inverter de novo aqui faria a peca correr pro lado contrario.
   const dx = x - state.drag.startX;
   const dy = y - state.drag.startY;
   if (!state.drag.moved) {
@@ -1185,7 +1405,12 @@ function onPreviewCanvasMouseMove(e) {
     pushUndo();
   }
   for (const [name, start] of state.drag.starts) {
-    state.partOffsets.set(name, { ...start, dx: (start.dx || 0) + dx, dy: (start.dy || 0) - dy });
+    // Numa peca contra-espelhada (arma/braco que nao acompanha o espelho), o
+    // dx entra ANTES da inversao de applyCounterMirror, entao o sinal que
+    // chega na tela e o oposto -- sem isto ela foge pro lado contrario do
+    // arrasto, e so ela, o que parece defeito aleatorio.
+    const flip = isMirrored(state.previewRow) && start.counterMirror ? -1 : 1;
+    state.partOffsets.set(name, { ...start, dx: (start.dx || 0) + dx * flip, dy: (start.dy || 0) - dy });
   }
   const o = state.partOffsets.get(state.selectedBone);
   if (o) {
@@ -1364,8 +1589,9 @@ async function onBakeClick() {
     scale: cfg.scale,
     offsetX: cfg.offsetX,
     offsetY: cfg.offsetY,
-    partOffsets: Object.fromEntries(state.partOffsetsByRow.east),
-    partOffsetsNorth: Object.fromEntries(state.partOffsetsByRow.north),
+    rowCount: cfg.rowCount,
+    partOffsetsByRow: Object.fromEntries(ROWS.map((r) => [r, Object.fromEntries(state.partOffsetsByRow[r])])),
+    rowModes: { ...state.rowModes },
   });
   log(
     `Formato de saida salvo para o rig ${state.rigId.slice(0, 8)} (a serie herda); ajustes manuais salvos so para "${cfg.characterName}".`,
@@ -1419,19 +1645,33 @@ document.getElementById('num-offset-y').addEventListener('input', onPreviewTime)
 document.getElementById('btn-preview').addEventListener('click', onPreviewTime);
 document.getElementById('btn-bake').addEventListener('click', onBakeClick);
 document.getElementById('preview-sel-bg').addEventListener('change', (e) => {
-  for (const id of ['preview-canvas', 'preview-canvas-north']) {
-    const canvas = document.getElementById(id);
+  for (const row of ROWS) {
+    const canvas = canvasForRow(row);
     canvas.classList.toggle('bg-checker', e.target.value === 'checker');
     canvas.classList.toggle('bg-dadada', e.target.value === 'dadada');
   }
 });
 document.getElementById('preview-chk-guides').addEventListener('change', onPreviewTime);
 document.getElementById('preview-sel-row').addEventListener('change', (e) => {
-  setEditingRow(e.target.value === 'north' ? 'north' : 'east');
+  setEditingRow(e.target.value);
+  updateRowControls();
   onPreviewTime();
 });
 document.getElementById('preview-chk-side').addEventListener('change', onPreviewTime);
 document.getElementById('btn-mirror-depth').addEventListener('click', mirrorDepthForBackView);
+document.getElementById('sel-row-count').addEventListener('change', () => {
+  updateRowControls();
+  onPreviewTime();
+});
+document.getElementById('chk-keep-hands').addEventListener('change', (e) => {
+  pushUndo();
+  setKeepHandsSide(state.previewRow, e.target.checked);
+  onPreviewTime();
+});
+document.getElementById('btn-row-mode').addEventListener('click', () => {
+  const row = state.previewRow;
+  setRowMode(row, isMirrored(row) ? 'own' : 'mirror');
+});
 
 // Encontra a escala que faz a referencia caber inteira dentro da celula sem
 // distorcer a proporcao original (equivalente ao "contain" do CSS), depois
@@ -1559,12 +1799,11 @@ document.getElementById('btn-reset-part-offset').addEventListener('click', () =>
   onPreviewTime();
 });
 
-const previewCanvasEl = document.getElementById('preview-canvas');
-previewCanvasEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
-previewCanvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
-const previewCanvasNorthEl = document.getElementById('preview-canvas-north');
-previewCanvasNorthEl.addEventListener('mousedown', onPreviewCanvasMouseDown);
-previewCanvasNorthEl.addEventListener('contextmenu', (e) => e.preventDefault());
+for (const row of ROWS) {
+  const el = canvasForRow(row);
+  el.addEventListener('mousedown', onPreviewCanvasMouseDown);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
 window.addEventListener('mousemove', onPreviewCanvasMouseMove);
 window.addEventListener('mouseup', onPreviewCanvasMouseUp);
 

@@ -122,25 +122,56 @@ recarrega o `.unitypackage` nem as outras pecas.
 `loadFromDetected(detected, displayLabel)` logo depois de resolver o `detected` -- se mexer no fluxo de
 carregamento, mexa la, nao em cada um separado.
 
-## North (costas) e East independentes (`renderer/app.js`)
+## As 4 direcoes, cada uma com arte e ajustes proprios (`renderer/app.js`)
 
-`state.partOffsetsByRow = {east, north}`; `state.partOffsets` e um getter/setter que aponta pro mapa da vista
-em edicao (`state.previewRow`), entao arrastar/camadas/pivo/z-order continuam iguais e valem so pra vista ativa.
-Arte tambem e por vista: com NORTH ativo, "Arte" grava em `state.imagesBack` (`partArtOverridesBack`), com EAST
-em `state.images`. O bake passa `partOffsets` por linha (`rowSpec.partOffsets`) e `computePoseFn(clip, t, offsets)`
-recebe os ajustes da linha (amortecimento). Preview: `#preview-canvas-north` (esq.) + `#preview-canvas` (dir.),
-"Lado a lado" liga os dois; clicar num canvas o torna a vista editada. Perfil salva `partOffsetsNorth`.
-Arte de costas casa por nome tolerante (`matchBackFiles` em `src/back-art.js`: `left-arm-back.png` -> `Left Arm.png`,
-`head-elm-back` -> `Head`), da pasta `Back/Costas` ou solta na `Vector Parts` com sufixo `-back`.
+O padrao do VTT quer 4 linhas na ordem FIXA `NORTH, EAST, SOUTH, WEST` (`ROWS` em `src/vtt-standards.js`) --
+o jogo descobre a direcao pelo NUMERO da linha, nao por rotulo. NORTH e WEST mostram as COSTAS, EAST e SOUTH a
+FRENTE, e o par de espelho respeita isso: `SOUTH <- EAST` e `WEST <- NORTH` (`MIRRORED_FROM`). Nunca a linha 1
+virando a linha 3 -- espelho so troca uma pela outra dentro de um par que ja mostra o mesmo lado da figura.
+
+Duas entregas validas, `#sel-row-count`: **2 linhas** (so NORTH e EAST no arquivo, a Biblioteca espelha as
+outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo `own` obriga as 4
+(`currentRowCount`), porque um arquivo de 2 linhas nao teria onde carrega-la.
+
+- `state.partOffsetsByRow` tem as 4; `state.partOffsets` e um getter/setter pro mapa da direcao em edicao
+  (`state.previewRow`), entao arrastar/camadas/pivo/z-order/escala continuam iguais e valem so pra ela.
+- `state.images` e a arte BASE (EAST, direto da Vector Parts). `state.rowArt = {north, south, west}` guarda
+  overrides PARCIAIS que se sobrepoem peca a peca (`imagesForRow`/`mergeImagesForRow`). `hideFace` tira as
+  pecas `Face*` so nas direcoes que mostram as costas.
+- `state.rowModes = {south, west}`: `'mirror'` (espelho da fonte, sem nada de seu) ou `'own'` (arte e ajustes
+  proprios). `setRowMode` para 'own' copia os ajustes da fonte pra comecar igual; carregar arte numa direcao
+  espelhada ja a torna propria sozinha. Direcao espelhada nao aceita arrasto (o que se ve ali e a fonte pelo
+  avesso).
+- O espelho e do CANVAS, nao da pose: `mirrorCell(ctx, axisX)` (`src/unity-skeleton.js`), celula por celula em
+  torno do eixo do corpo, igual a Biblioteca -- espelhar a faixa inteira inverteria a ordem das colunas e
+  tocaria a passada de tras pra frente. O preview usa o mesmo `mirrorCell`, entao tela e `.webp` batem.
+- **Armas na mesma mao** (`applyCounterMirror` + `setKeepHandsSide`, ligado por padrao): espelhar o personagem
+  inteiro troca a espada de mao e joga o escudo pro outro ombro. As pecas marcadas com `counterMirror` no
+  overlay da direcao voltam ao original em posicao, angulo E arte (negar x, negar o angulo e inverter o flipX
+  compoe exatamente com o `mirrorCell`), entao o corpo vira e braco/mao/arma ficam no lugar. Marca o que a mao
+  segura (`isHeldItemName`) e tambem o braco/mao (`isLimbName`) -- so a arma se soltaria da mao.
+- Direcao espelhada E EDITAVEL: os ajustes dela sao uma camada de CORRECAO (`overlayOffsets`) por cima dos da
+  fonte; `offsetsForDisplay(row)` soma as duas pra camadas/hit-test, e o que se edita e so a de cima.
+  Dois sinais que ja mordiam: o hit-test desespelha o X do mouse (`canvasEventToLocalCraftpix` usa
+  `state.lastCell.bodyAxisX`), e o `dx` de uma peca `counterMirror` entra ANTES da inversao, entao o arrasto
+  dela usa o sinal oposto -- sem isso so ela foge pro lado contrario, o que parece defeito aleatorio.
+- Preview: um canvas por direcao (`#preview-canvas` e o de EAST, os outros `#preview-canvas-<row>`), "Lado a
+  lado" mostra todas as do arquivo; clicar num canvas o torna o editado.
+- Arte de cada direcao casa por nome tolerante (`matchRowArtFiles` em `src/back-art.js`:
+  `left-arm-back.png` -> `Left Arm.png`, `head-elm-back` -> `Head`), vinda da subpasta da direcao
+  (`Back/Costas`, `South/Sul`, `West/Oeste` -- `ROW_ART_DIRNAMES`) ou solta na `Vector Parts` com o sufixo
+  (`ROW_ART_SUFFIXES`).
+- Perfil salva `partOffsetsByRow` + `rowModes` + `rowCount`, e repete EAST/NORTH nas chaves antigas
+  (`partOffsets`/`partOffsetsNorth`) pra ir e voltar entre versoes -- `characterOffsetsByRow` le os dois.
 
 Desfazer/refazer: `pushUndo(key)` (app.js) tira snapshot dos `partOffsetsByRow` ANTES de cada mutacao (arrasto, campos
 numericos -- agrupados por `key` --, reordenar camadas, seguir, resetar); Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z. Nao cobre troca de
 arte. Selecao multipla: `state.multiSel` (Set); Shift+clique no preview/camadas soma/tira; arrastar move o grupo pelo mesmo
 delta (pecas que ja seguem uma selecionada via `followBone` sao puladas pra nao contar em dobro).
 
-Ordem de camadas do NORTH: o default vem do `.scml` e e o MESMO do EAST, o que esta errado pra vista de costas
+Ordem de camadas das direcoes de costas (NORTH/WEST): o default vem do `.scml` e e o MESMO do EAST, o que esta errado pra vista de costas
 (braco/mao/escudo do lado de ca deveriam ficar ATRAS do corpo). Botao "Espelhar profundidade"
-(`mirrorDepthForBackView`, so aparece editando NORTH com arte de costas) inverte a lista toda menos
+(`mirrorDepthForBackView`, so aparece editando uma direcao de costas e editavel) inverte a lista toda menos
 `Head`/`Face*`, que continuam por cima -- eles nao estao atras do corpo em profundidade, so por cima na vertical.
 Grava zIndex so nos offsets do NORTH; Ctrl+Z desfaz. `loadFromDetected` ja aplica isso sozinho
 (`applyBackViewDepth`) quando ha arte de costas E o NORTH ainda nao tem ajuste nenhum -- se o perfil salvo trouxe
