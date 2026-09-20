@@ -54,7 +54,12 @@ let state = {
   // O que esta aqui vale SO naquele clip; o que esta em partOffsetsByRow vale
   // em todos.
   clipOffsetsByRow: { north: {}, east: {}, south: {}, west: {} },
-  editClipOnly: false, // pra onde vao as EDICOES: camada do clip ou a geral
+  // Ligado por padrao: um ajuste NUNCA compromete as outras animacoes sem
+  // voce mandar. Desligar faz a edicao valer em todas as animacoes daquela
+  // direcao (util pra calibrar a montagem de uma vez).
+  editClipOnly: true,
+  // Arte tambem por animacao: row -> clip -> Map<peca, {img, file}>.
+  clipArtByRow: { north: {}, east: {}, south: {}, west: {} },
   get partOffsets() {
     return this.editClipOnly
       ? clipLayer(this.previewRow, previewClipName(), true)
@@ -193,7 +198,7 @@ function renderTemplatePartsList() {
   const orphans = state.artPartNames.filter((p) => !usedByBones.has(p));
   document.getElementById('template-parts-section').style.display = orphans.length ? 'block' : 'none';
   for (const partName of orphans) {
-    const isCustom = artOverridesForView().has(partName);
+    const isCustom = temArteTrocada(partName);
     const row = document.createElement('div');
     row.className = 'layer-row';
     row.innerHTML =
@@ -209,8 +214,12 @@ function renderTemplatePartsList() {
 }
 
 // Quais trocas de arte valem pra direcao que esta sendo editada.
-function artOverridesForView() {
-  return state.partArtOverridesByRow[state.previewRow] || state.partArtOverridesByRow.east;
+// Se a peca tem arte trocada na camada que esta sendo editada -- e o que
+// decide mostrar o botao de voltar ao padrao.
+function temArteTrocada(pngName) {
+  if (state.editClipOnly) return clipArtLayer(state.previewRow, previewClipName()).has(pngName);
+  const m = state.partArtOverridesByRow[state.previewRow] || state.partArtOverridesByRow.east;
+  return m.has(pngName);
 }
 
 function refreshAfterArtChange() {
@@ -274,22 +283,33 @@ function rowArtMap(row) {
 
 // Conjunto de imagens efetivo de uma direcao: a base com os overrides
 // daquela direcao por cima, peca a peca.
-function imagesForRow(row) {
-  if (row === 'east') return state.images;
-  return mergeImagesForRow(state.images, state.rowArt[row], { hideFace: BACK_ROWS.has(row) });
-}
+
 
 // Imagens efetivas de uma LINHA do arquivo: a arte da direcao-fonte e, por
 // cima, os overrides da propria linha. Uma direcao espelhada pode trocar
 // pecas soltas sem deixar de ser espelho -- e o que permite o braco do escudo
 // mostrar a face de TRAS no SOUTH (onde ele passa pro outro lado do corpo)
 // continuando a ser o espelho de EAST no resto.
-function imagesForDisplayRow(row) {
+function imagesForDisplayRow(row, clipName = previewClipName()) {
   const src = sourceRowFor(row);
-  let imgs = imagesForRow(src);
-  const own = src === row ? null : state.rowArt[row];
-  if (own && own.size) imgs = mergeImagesForRow(imgs, own);
-  return imgs;
+  const camadas = [state.rowArt[src], clipArtLayer(src, clipName)];
+  if (src !== row) camadas.push(state.rowArt[row], clipArtLayer(row, clipName));
+
+  const merged = new Map(state.images);
+  let trocouCabeca = false;
+  for (const camada of camadas) {
+    if (!camada) continue;
+    for (const [nome, valor] of camada) {
+      merged.set(nome, valor.img || valor);
+      if (nome === 'Head.png') trocouCabeca = true;
+    }
+  }
+  // De costas nao se ve o rosto: com a cabeca redesenhada, as pecas Face* da
+  // frente sairiam por cima dela. Sem imagem, o drawPose pula a peca.
+  if (BACK_ROWS.has(src) && trocouCabeca) {
+    for (const nome of [...merged.keys()]) if (nome.toLowerCase().startsWith('face')) merged.delete(nome);
+  }
+  return merged;
 }
 
 // A direcao de onde uma linha tira pose/arte: ela mesma, ou a fonte do
@@ -315,6 +335,12 @@ function previewClipName() {
 function temAjuste(row) {
   if (state.partOffsetsByRow[row].size > 0) return true;
   return Object.values(state.clipOffsetsByRow[row] || {}).some((m) => m.size > 0);
+}
+
+function clipArtLayer(row, clipName, create = false) {
+  const porClip = state.clipArtByRow[row] || (state.clipArtByRow[row] = {});
+  if (!porClip[clipName] && create) porClip[clipName] = new Map();
+  return porClip[clipName] || new Map();
 }
 
 function clipLayer(row, clipName, create = false) {
@@ -410,19 +436,38 @@ function currentRowCount() {
 async function onSwapPartArt(partName) {
   const filePath = await ipcRenderer.invoke('select-image-file');
   if (!filePath) return;
-  // Cada direcao tem a SUA arte -- trocar numa nao mexe nas outras. Carregar
-  // arte numa direcao espelhada e o mesmo que dizer "quero desenhar esta",
-  // entao ela deixa de ser espelho.
+  // Cada direcao tem a SUA arte, e com "so nesta animacao" ligado a troca
+  // vale so no clip aberto -- trocar a espada por um machado no Slashing nao
+  // mexe no Idle.
   const row = state.previewRow;
-  state.partArtOverridesByRow[row].set(partName, filePath);
-  rowArtMap(row).set(partName, await loadImageAnyFormat(filePath));
+  const img = await loadImageAnyFormat(filePath);
+  const arquivo = path.basename(filePath);
+  if (state.editClipOnly) {
+    clipArtLayer(row, previewClipName(), true).set(partName, { img, file: arquivo });
+  } else {
+    state.partArtOverridesByRow[row].set(partName, filePath);
+    rowArtMap(row).set(partName, img);
+    if (row !== 'east') state.rowArtFiles[row].set(partName, arquivo);
+  }
   refreshAfterArtChange();
-  log(`Peca "${partName}" (${row.toUpperCase()}) trocada por ${path.basename(filePath)} (so nesta sessao, o arquivo original nao foi tocado).`, 'ok');
+  log(
+    `Peca "${partName}" (${row.toUpperCase()}${state.editClipOnly ? `, so em "${previewClipName()}"` : ''}) trocada por ${arquivo} (so nesta sessao, o arquivo original nao foi tocado).`,
+    'ok'
+  );
 }
 
 async function onResetPartArt(partName) {
   if (!state.artSourceDir) return;
   const row = state.previewRow;
+
+  // Com "so nesta animacao" ligado, o reset tira so a troca daquele clip e a
+  // peca volta pro que a direcao usa nas outras animacoes.
+  if (state.editClipOnly) {
+    clipArtLayer(row, previewClipName()).delete(partName);
+    refreshAfterArtChange();
+    return;
+  }
+
   state.partArtOverridesByRow[row].delete(partName);
 
   if (row === 'east') {
@@ -459,6 +504,7 @@ async function loadFromDetected(detected, displayLabel) {
   // personagem, nao tem sentido nenhum no outro.
   state.partOffsetsByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
   state.clipOffsetsByRow = { north: {}, east: {}, south: {}, west: {} };
+  state.clipArtByRow = { north: {}, east: {}, south: {}, west: {} };
   state.undoStack = [];
   state.redoStack = [];
   state.multiSel = new Set();
@@ -1170,9 +1216,10 @@ function followsAnyIn(boneName, set) {
 
 function updateEditScopeLabel() {
   const clip = previewClipName();
-  document.getElementById('edit-clip-only-label').textContent = clip
-    ? `Ajustar so em "${clip}"`
-    : 'Ajustar so nesta animacao';
+  const el = document.getElementById('edit-clip-only-label');
+  el.textContent = 'Ajustar so nesta animacao';
+  el.title = clip ? `A animacao aberta agora e "${clip}".` : '';
+  document.getElementById('chk-edit-clip-only').checked = state.editClipOnly;
 }
 
 function selectPart(boneName) {
@@ -1246,14 +1293,27 @@ function currentLayers(offsets = state.partOffsets) {
 // Nome do ARQUIVO que esta desenhando esta peca NESTA direcao. Depois de
 // trocar Sword por Axe (ou Shield por shield-back), a linha tem que dizer o
 // arquivo de verdade -- senao nao da pra saber o que esta montado.
-function artFileInUse(pngName, row = state.previewRow) {
+function artFileInUse(pngName, row = state.previewRow, clipName = previewClipName()) {
+  const src = sourceRowFor(row);
+  // Da camada mais especifica pra mais geral -- vence a primeira que tiver.
+  const candidatos = [
+    src !== row ? clipArtLayer(row, clipName).get(pngName) : null,
+    src !== row ? nomeDaArteGeral(row, pngName) : null,
+    clipArtLayer(src, clipName).get(pngName),
+    nomeDaArteGeral(src, pngName),
+  ];
+  for (const c of candidatos) {
+    if (!c) continue;
+    const nome = typeof c === 'string' ? c : c.file;
+    if (nome) return nome;
+  }
+  return pngName;
+}
+
+function nomeDaArteGeral(row, pngName) {
   const override = state.partArtOverridesByRow[row] && state.partArtOverridesByRow[row].get(pngName);
   if (override) return path.basename(override);
-  const src = sourceRowFor(row);
-  const fromRow = state.rowArtFiles[row] && state.rowArtFiles[row].get(pngName);
-  const fromSrc = state.rowArtFiles[src] && state.rowArtFiles[src].get(pngName);
-  const srcOverride = state.partArtOverridesByRow[src] && state.partArtOverridesByRow[src].get(pngName);
-  return fromRow || (srcOverride && path.basename(srcOverride)) || fromSrc || pngName;
+  return (state.rowArtFiles[row] && state.rowArtFiles[row].get(pngName)) || null;
 }
 
 // ARRUMACAO PADRAO DAS 4 DIRECOES, no nivel do ESQUELETO. O usuario arruma
@@ -1265,30 +1325,65 @@ function artFileInUse(pngName, row = state.previewRow) {
 // personagem tem os PNGs dele com os mesmos nomes, entao o nome resolve na
 // pasta dele. Peca que nao existir la simplesmente nao e trocada.
 function captureRowDefaults() {
-  const out = {};
-  for (const row of ROWS) {
-    const arte = {};
-    for (const bone of state.rig.bones.values()) {
-      const png = bone.sprite && bone.sprite.pngName;
-      if (!png) continue;
-      const emUso = artFileInUse(png, row);
-      if (emUso !== png) arte[png] = emUso;
-    }
-    // SO o que e estrutural da direcao: ordem das camadas e peca oculta.
-    // dx/dy/angulo/pivo/escala/amortecimento sao correcoes na arte de UM
-    // personagem -- herdar isso entre personagens e exatamente o erro que o
-    // formato v1 do perfil cometia (ver src/rig-profile.js), e chega o
-    // proximo da serie ja desmontado.
-    const offsets = {};
-    for (const [nome, o] of state.partOffsetsByRow[row]) {
+  // SO o que e estrutural: ordem das camadas, peca oculta e qual arquivo cada
+  // peca usa. dx/dy/angulo/pivo/escala/amortecimento ficam de fora de
+  // proposito -- sao correcoes na arte de UM personagem, e herdar isso entre
+  // personagens e exatamente o erro que o formato v1 do perfil cometia (ver
+  // src/rig-profile.js): o proximo da serie chegava ja desmontado.
+  const estrutura = (offsets) => {
+    const out = {};
+    for (const [nome, o] of offsets) {
       const guardar = {};
       if (o.zIndex !== undefined) guardar.zIndex = o.zIndex;
       if (o.hidden) guardar.hidden = true;
-      if (Object.keys(guardar).length) offsets[nome] = guardar;
+      if (Object.keys(guardar).length) out[nome] = guardar;
     }
-    out[row] = { offsets, art: arte };
+    return out;
+  };
+  const arteDe = (camada) => {
+    const out = {};
+    for (const [png, valor] of camada) {
+      const arquivo = typeof valor === 'string' ? valor : valor.file;
+      if (arquivo && arquivo !== png) out[png] = arquivo;
+    }
+    return out;
+  };
+
+  const out = {};
+  for (const row of ROWS) {
+    // Geral da direcao: arte vinda do disco + trocas feitas com a caixa
+    // "so nesta animacao" DESLIGADA.
+    const arteGeral = {};
+    for (const bone of state.rig.bones.values()) {
+      const png = bone.sprite && bone.sprite.pngName;
+      if (!png) continue;
+      const nome = nomeDaArteGeral(row, png);
+      if (nome && nome !== png) arteGeral[png] = nome;
+    }
+
+    const clips = {};
+    const nomes = new Set([
+      ...Object.keys(state.clipOffsetsByRow[row] || {}),
+      ...Object.keys(state.clipArtByRow[row] || {}),
+    ]);
+    for (const clip of nomes) {
+      const offsets = estrutura(clipLayer(row, clip));
+      const art = arteDe(clipArtLayer(row, clip));
+      if (Object.keys(offsets).length || Object.keys(art).length) clips[clip] = { offsets, art };
+    }
+
+    out[row] = { offsets: estrutura(state.partOffsetsByRow[row]), art: arteGeral, clips };
   }
   return out;
+}
+
+// Carrega o arquivo pelo NOME na pasta de arte do personagem aberto. Peca que
+// nao existir la simplesmente nao e trocada.
+async function carregarArtePorNome(arquivo) {
+  if (!state.artSourceDir) return null;
+  const caminho = path.join(state.artSourceDir, arquivo);
+  if (!fs.existsSync(caminho)) return null;
+  return { img: await loadImage(caminho), caminho };
 }
 
 async function applyRowDefaults(defaults) {
@@ -1296,18 +1391,30 @@ async function applyRowDefaults(defaults) {
   for (const row of ROWS) {
     const def = defaults[row];
     if (!def) continue;
+
     state.partOffsetsByRow[row] = new Map(Object.entries(def.offsets || {}));
     for (const [png, arquivo] of Object.entries(def.art || {})) {
-      const caminho = path.join(state.artSourceDir || '', arquivo);
-      if (!state.artSourceDir || !fs.existsSync(caminho)) continue;
-      const img = await loadImage(caminho);
-      if (row === 'east') state.images.set(png, img);
+      const achado = await carregarArtePorNome(arquivo);
+      if (!achado) continue;
+      if (row === 'east') state.images.set(png, achado.img);
       else {
-        state.rowArt[row].set(png, img);
+        state.rowArt[row].set(png, achado.img);
         state.rowArtFiles[row].set(png, arquivo);
       }
-      state.partArtOverridesByRow[row].set(png, caminho);
+      state.partArtOverridesByRow[row].set(png, achado.caminho);
       pecas++;
+    }
+
+    for (const [clip, camada] of Object.entries(def.clips || {})) {
+      if (Object.keys(camada.offsets || {}).length) {
+        state.clipOffsetsByRow[row][clip] = new Map(Object.entries(camada.offsets));
+      }
+      for (const [png, arquivo] of Object.entries(camada.art || {})) {
+        const achado = await carregarArtePorNome(arquivo);
+        if (!achado) continue;
+        clipArtLayer(row, clip, true).set(png, { img: achado.img, file: arquivo });
+        pecas++;
+      }
     }
   }
   return pecas;
@@ -1357,7 +1464,7 @@ function renderLayersList() {
     // "Pecas do template" so sobrou pras variantes que nenhum osso usa).
     const bone = [...state.rig.bones.values()].find((b) => b.name === layer.boneName);
     const pngName = bone && bone.sprite ? bone.sprite.pngName : null;
-    const isCustom = pngName && artOverridesForView().has(pngName);
+    const isCustom = pngName && temArteTrocada(pngName);
     const canSwap = !!(state.artSourceDir && pngName);
     const hidden = !!(layerOffsets.get(layer.boneName) || {}).hidden;
 
@@ -1444,8 +1551,10 @@ function backViewDepthOrder(layers) {
 }
 
 // Grava a ordem espelhada como zIndex explicito no mapa de ajustes de `offsets`.
-function applyBackViewDepth(offsets) {
-  const ordered = backViewDepthOrder(currentLayers(offsets).map((l) => l.boneName));
+// `lidoDe` e a ordem de onde se parte; `offsets` e onde o resultado e gravado
+// (nem sempre e o mesmo mapa -- ver mirrorDepthForBackView).
+function applyBackViewDepth(offsets, lidoDe = offsets) {
+  const ordered = backViewDepthOrder(currentLayers(lidoDe).map((l) => l.boneName));
   ordered.forEach((name, i) => {
     offsets.set(name, { ...(offsets.get(name) || {}), zIndex: i });
   });
@@ -1453,7 +1562,7 @@ function applyBackViewDepth(offsets) {
 
 function mirrorDepthForBackView() {
   pushUndo();
-  applyBackViewDepth(state.partOffsets);
+  applyBackViewDepth(state.partOffsets, offsetsForDisplay(state.previewRow));
   renderLayersList();
   onPreviewTime();
   log('Ordem de camadas do NORTH espelhada em profundidade (o EAST nao mudou).', 'ok');
@@ -1463,7 +1572,10 @@ function mirrorDepthForBackView() {
 // depois do alvo na lista (exibida de frente/topo pra fundo). Reatribui
 // zIndex inteiro sequencial pra todo mundo, igual o antigo botao ^/v fazia.
 function reorderLayers(draggedBone, targetBone, after) {
-  const layers = currentLayers(); // ordem ascendente de z (fundo -> frente)
+  // Le a ordem EFETIVA (geral + camada da animacao), nao so a camada que vai
+  // receber a escrita -- senao o primeiro arrasto dentro de uma animacao
+  // recalcularia tudo a partir da ordem crua do .scml e as pecas saltariam.
+  const layers = currentLayers(offsetsForDisplay(state.previewRow)); // fundo -> frente
   const displayed = [...layers].reverse().map((l) => l.boneName); // frente -> fundo, como na lista
   const fromIdx = displayed.indexOf(draggedBone);
   if (fromIdx === -1) return;

@@ -145,14 +145,19 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
 - O espelho e do CANVAS, nao da pose: `mirrorCell(ctx, axisX)` (`src/unity-skeleton.js`), celula por celula em
   torno do eixo do corpo, igual a Biblioteca -- espelhar a faixa inteira inverteria a ordem das colunas e
   tocaria a passada de tras pra frente. O preview usa o mesmo `mirrorCell`, entao tela e `.webp` batem.
-- **Ajuste POR ANIMACAO** (`state.clipOffsetsByRow[row][nomeDoClip]`), por cima do geral da direcao. Existe
-  porque um ajuste so nao serve pra todo clip: no Sliding a perna esta deitada e precisa de um empurrao que
-  no Idle desmontaria o personagem. `effectiveOffsets(row, clipName)` empilha, campo a campo, geral da
-  direcao-fonte -> clip da fonte -> (se espelhada) geral e clip da propria linha; preview e bake recebem
-  esse mapa ja somado, entao `bakeGrid` voltou a ter uma camada so (`rowSpec.partOffsets`).
-  O checkbox "Ajustar so em <clip>" (`state.editClipOnly`) escolhe pra QUAL camada a edicao vai; desligado
-  (padrao) e o geral. Trocar de animacao redesenha camadas e campos, porque os dois passaram a depender do
-  clip. Nao entra no padrao do rig -- la so vao zIndex e hidden da camada geral.
+- **TUDO e por ANIMACAO por padrao** (`state.editClipOnly` comeca LIGADO). Posicao, ordem das camadas, peca
+  oculta e troca de arte vao pra camada do clip aberto: `state.clipOffsetsByRow[row][clip]` e
+  `state.clipArtByRow[row][clip]`. Desligar a caixa "Ajustar so nesta animacao" faz a edicao cair na camada
+  GERAL da direcao, que vale em todas -- e o que se usa pra calibrar a montagem de uma vez.
+  Motivo de ser ligado por padrao (pedido do usuario): "se nao num vira ajuste vira um pesadelo" -- com 18
+  clips, um ajuste que vaza pros outros nao e ajuste. O rotulo NAO nomeia o clip (nomear confundiu: parecia
+  um ajuste especifico do Sliding em vez do "clip que estiver aberto").
+  `effectiveOffsets(row, clip)` empilha, campo a campo, geral da direcao-fonte -> clip da fonte -> (se
+  espelhada) geral e clip da propria linha; `imagesForDisplayRow(row, clip)` faz o mesmo com a arte. Preview
+  e bake recebem o resultado ja somado, entao `bakeGrid` tem uma camada so (`rowSpec.partOffsets`).
+  Quem LE a ordem pra reordenar/espelhar profundidade usa a EFETIVA, nao a camada que vai receber a escrita
+  -- senao o primeiro arrasto dentro de uma animacao recalcula tudo a partir da ordem crua do `.scml` e as
+  pecas saltam.
 - SOUTH e WEST sao SEMPRE espelho (`sourceRowFor`/`isMirrored` so olham `MIRRORED_FROM`). Nao ha modo 'own'
   nem botao na barra da direcao: teve modo, "manter armas na mesma mao" e "virar braco do escudo", e tudo foi
   removido a pedido -- complicava mais do que resolvia. Quem quiser SOUTH desenhado troca a arte peca a peca.
@@ -178,6 +183,8 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   ordem das camadas (`zIndex`), as pecas ocultas (`hidden`) e qual ARQUIVO cada peca usa -- pelo NOME, nao
   pelo caminho, porque no fluxo de skins o proximo personagem tem os PNGs dele com os mesmos nomes. Os
   proximos personagens do mesmo rig abrem ja arrumados; e o que torna viavel produzir centenas de skins.
+  Guarda a camada geral E uma entrada por animacao (`clips[nomeDoClip]`), senao o que foi arrumado com a
+  caixa ligada (o padrao) nao entraria.
   NAO entra dx/dy/angulo/pivo/escala/amortecimento: sao correcoes na arte de UM personagem, e herdar isso e
   exatamente o erro que o formato v1 cometia (comentario grande no topo de `src/rig-profile.js`).
   Ajuste do proprio personagem tem prioridade: o padrao do rig so e aplicado quando as 4 direcoes dele

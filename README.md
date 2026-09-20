@@ -79,10 +79,12 @@ linha de camada mostra o **arquivo** que esta desenhando a peca (depois de troca
 `axe.png`) e tem um botao pra **ocultar** aquela peca naquela direcao -- da pra sair com escudo no EAST e sem
 no SOUTH.
 
-Por padrao, um ajuste de peca vale em TODAS as animacoes daquela direcao -- e o que voce quer ao calibrar a
-montagem. Quando a pose de uma animacao especifica e tao diferente que o ajuste geral nao serve (a perna
-deitada no Sliding, por exemplo), ligue **"Ajustar so em <animacao>"** no painel da peca: dali em diante o
-que voce mexer vale so naquela animacao, e o Idle/Walk nao sentem nada.
+Por padrao, **tudo que voce mexe vale so na animacao que esta na tela**: posicao, ordem das camadas, peca
+oculta e troca de arte. Arrumar a perna deitada do Sliding nao toca no Idle nem no Walking. E a caixa
+**"Ajustar so nesta animacao"**, no painel da peca, que ja vem marcada.
+
+Desmarque a caixa quando quiser o contrario: calibrar a montagem de uma vez, valendo em todas as animacoes
+daquela direcao.
 
 Depois de arrumar as quatro direcoes de um personagem, o botao **"Salvar arrumacao como padrao do rig"**
 guarda essa arrumacao no perfil do ESQUELETO: ordem das camadas, pecas ocultas e qual arquivo cada peca usa
