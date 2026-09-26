@@ -33,7 +33,7 @@ direto do `.scml` (sempre XML texto, nunca falha por isso).
 - `src/unity-package.js` -- extrai o `.unitypackage` (gzip+tar) e mapeia guid -> pathname
 - `src/unity-yaml.js` -- parser do YAML serializado do Unity (fileIDs sao inteiros de 64 bits, maiores que `Number.MAX_SAFE_INTEGER` -- tratados como string)
 - `src/unity-prefab.js` -- monta a hierarquia de ossos (GameObject+Transform+SpriteRenderer) e extrai os `AnimationClip`. `PIXELS_PER_UNIT=100` (nao mude -- ver comentario no arquivo, era 50 como curativo de um bug de pivo ja corrigido)
-- `src/unity-clip-sampler.js` -- avaliacao Hermite das curvas (posicao + quaternion) no tempo `t`
+- `src/unity-clip-sampler.js` -- avaliacao Hermite das curvas (posicao + quaternion) no tempo `t`, e em DEGRAU das curvas de indice de sprite (piscar/careta: entre olho aberto e fechado nao existe meio-termo)
 - `src/unity-skeleton.js` -- compoe o transform mundial de cada osso e desenha os sprites anexados num canvas (`drawPose`/`computePose`/`computeAnimatedBounds`/`applyManualOverrides`) -- o modulo mais sensivel do projeto, ver comentario grande sobre a convencao de pivo do Spriter ali dentro antes de mexer
 - `src/scml-parser.js` -- le o `.scml`: pivot/dimensao de cada PNG, `z_index` de camadas (o Unity exporta `m_SortingOrder=0` pra tudo nesses pacotes) e as animacoes completas
 - `src/scml-rig.js` -- pose/animacao direto do `.scml`, sem depender do `.unitypackage`. E o fallback automatico quando o `.prefab` e binario (Archer Guy, Medieval Mage, Barbarian Warrior...)

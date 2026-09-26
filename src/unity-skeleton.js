@@ -170,11 +170,21 @@ function computePose(rig, clip, t, zIndexByName, partOffsets) {
     // causa dessas curvas -- usar so o bind deixa os dois invisiveis sempre.
     const sampled = sampledByPath.get(bone.path);
     const alpha = sampled && sampled.alpha !== undefined ? sampled.alpha : bone.sprite.alpha;
+
+    // Peca que TROCA DE DESENHO por animacao (piscar, careta de dor): a curva
+    // diz o indice, e a lista de desenhos veio do proprio prefab. Sem isto a
+    // cara fica parada em "Face 01.png" em Idle Blinking e Hurt.
+    let sprite = bone.sprite;
+    if (bone.spriteSet && sampled && sampled.spriteIndex !== undefined) {
+      const nome = bone.spriteSet[sampled.spriteIndex];
+      if (nome && nome !== sprite.pngName) sprite = { ...sprite, pngName: nome };
+    }
+
     items.push({
       zIndex: zFromScml !== undefined ? zFromScml : bone.sprite.sortingOrder,
       boneName: bone.name,
       world: worldByTransformId.get(bone.transformId),
-      sprite: bone.sprite,
+      sprite,
       alpha,
     });
   }

@@ -24,6 +24,24 @@ function buildRig(prefabAssetText, guidToPathname) {
   const transforms = new Map([...docs.entries()].filter(([, d]) => d.key === 'Transform'));
   const spriteRenderers = new Map([...docs.entries()].filter(([, d]) => d.key === 'SpriteRenderer'));
 
+  // TROCA DE SPRITE POR ANIMACAO (piscar de olhos, careta de dor).
+  // O Spriter2UnityDX poe um MonoBehaviour na peca que troca de desenho: ele
+  // lista os sprites possiveis em `Sprites` e guarda em `DisplayedSprite` o
+  // INDICE do que esta na tela. Quem mexe nesse indice e uma curva de
+  // m_FloatCurves com attribute "DisplayedSprite" -- nao ha m_PPtrCurves
+  // nenhuma nesses pacotes (conferido nos 18 clips do Skeleton Crusader).
+  // Sem ler isto, "Idle Blinking" e "Hurt" rodam com a cara parada: a peca
+  // Face 01 fica em Face 01.png o tempo todo.
+  const spriteSetsByGameObject = new Map();
+  for (const [, d] of docs) {
+    if (d.key !== 'MonoBehaviour' || d.data.DisplayedSprite === undefined) continue;
+    const nomes = (d.data.Sprites || []).map((ref) => {
+      const pathname = ref && ref.guid ? guidToPathname.get(ref.guid) : null;
+      return pathname ? pathname.split('/').pop() : null;
+    });
+    if (nomes.length) spriteSetsByGameObject.set(String(d.data.m_GameObject.fileID), nomes);
+  }
+
   // fileId do componente Transform -> { fileId, name, ... }
   const bonesByTransformId = new Map();
   const transformIdByGameObjectId = new Map();
@@ -57,6 +75,9 @@ function buildRig(prefabAssetText, guidToPathname) {
       gameObjectId: goId,
       name: go.data.m_Name,
       sprite,
+      // lista de desenhos que esta peca pode mostrar, quando ela troca por
+      // animacao (null quando a peca tem um desenho so)
+      spriteSet: spriteSetsByGameObject.get(String(goId)) || null,
       parentTransformId: null,
       localPos: { x: 0, y: 0, z: 0 },
       localRot: { x: 0, y: 0, z: 0, w: 1 },
@@ -128,6 +149,14 @@ function buildRig(prefabAssetText, guidToPathname) {
           path: c.path,
           keys: c.curve.m_Curve.map((k) => ({ time: k.time, value: k.value, inSlope: k.inSlope, outSlope: k.outSlope })),
         })),
+      // indice do desenho a mostrar, pra pecas que trocam de sprite (ver
+      // spriteSetsByGameObject acima)
+      spriteIndexCurves: (d.data.m_FloatCurves || [])
+        .filter((c) => c.attribute === 'DisplayedSprite')
+        .map((c) => ({
+          path: c.path,
+          keys: c.curve.m_Curve.map((k) => ({ time: k.time, value: k.value, inSlope: k.inSlope, outSlope: k.outSlope })),
+        })),
     }));
 
   return { bones: bonesByTransformId, root, nameIndex, clips, pixelsPerUnit: PIXELS_PER_UNIT };
@@ -139,6 +168,11 @@ function computeClipLength(clipData) {
     for (const k of c.curve.m_Curve) maxTime = Math.max(maxTime, k.time);
   }
   for (const c of clipData.m_PositionCurves || []) {
+    for (const k of c.curve.m_Curve) maxTime = Math.max(maxTime, k.time);
+  }
+  // Um clip pode ser SO troca de sprite/alpha (um piscar sem nenhum osso se
+  // mexendo). Sem contar estas, ele sairia com duracao 0 e nao tocaria.
+  for (const c of clipData.m_FloatCurves || []) {
     for (const k of c.curve.m_Curve) maxTime = Math.max(maxTime, k.time);
   }
   return maxTime; // segundos (formato nativo do Unity AnimationClip)

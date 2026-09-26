@@ -122,6 +122,28 @@ recarrega o `.unitypackage` nem as outras pecas.
 `loadFromDetected(detected, displayLabel)` logo depois de resolver o `detected` -- se mexer no fluxo de
 carregamento, mexa la, nao em cada um separado.
 
+## Troca de sprite por animacao (piscar, careta de dor)
+
+"Idle Blinking" e "Hurt" rodavam com a cara PARADA. Causa: a peca que troca de desenho tem um MonoBehaviour
+do Spriter2UnityDX com `Sprites: [Face 01, Face 02, Face 03]` e um `DisplayedSprite` que guarda o INDICE do
+que esta na tela; quem mexe nesse indice e uma curva de `m_FloatCurves` com `attribute: DisplayedSprite`.
+`unity-prefab.js` so lia `m_Color.a` dali, entao o indice era ignorado.
+
+NAO ha `m_PPtrCurves` nenhuma nesses pacotes -- conferido nos 18 clips do Skeleton Crusader, todas vazias.
+Nao perca tempo procurando por ali.
+
+- `unity-prefab.js` monta `spriteSetsByGameObject` (guid -> nome do PNG, via `guidToPathname`) e poe em
+  `bone.spriteSet`; as curvas de indice viram `clip.spriteIndexCurves`.
+- `computeClipLength` passou a contar `m_FloatCurves` tambem: um clip que so pisca (sem osso nenhum se
+  mexendo) sairia com duracao 0 e nao tocaria.
+- `sampleStepCurve` (`unity-clip-sampler.js`) amostra o indice em DEGRAU, nao com Hermite: entre o olho
+  aberto e o fechado nao existe "meio olho".
+- `computePose` troca so o `pngName` do item (`{...sprite, pngName}`), sem tocar no `bone.sprite` original.
+- O caminho do `.scml` (prefab binario) ja fazia isso sozinho: cada key de timeline traz o proprio
+  `imageName`. Nao precisou de nada la.
+- Medido depois da correcao: Idle Blinking vai Face 02 -> Face 01 -> Face 02 (chaves em 0.00/0.10/0.60) e
+  Hurt fica em Face 03 o clip inteiro.
+
 ## As 4 direcoes, cada uma com arte e ajustes proprios (`renderer/app.js`)
 
 O padrao do VTT quer 4 linhas na ordem FIXA `NORTH, EAST, SOUTH, WEST` (`ROWS` em `src/vtt-standards.js`) --

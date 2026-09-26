@@ -60,6 +60,19 @@ function sampleScalarCurve(keys, t) {
   return hermite(k0.time, k0.value, k0.outSlope, k1.time, k1.value, k1.inSlope, t);
 }
 
+// Curva de INDICE (qual desenho a peca mostra) nao se interpola: entre o
+// olho aberto e o fechado nao existe "meio olho". Vale o valor da ultima
+// chave ja passada -- degrau, como o Unity trata essas curvas.
+function sampleStepCurve(keys, t) {
+  if (!keys.length) return null;
+  let valor = keys[0].value;
+  for (const k of keys) {
+    if (k.time > t) break;
+    valor = k.value;
+  }
+  return valor;
+}
+
 const POS_COMPONENTS = ['x', 'y', 'z'];
 const ROT_COMPONENTS = ['x', 'y', 'z', 'w'];
 
@@ -90,7 +103,13 @@ function sampleClip(clip, t) {
     if (!out.has(c.path)) out.set(c.path, {});
     out.get(c.path).alpha = a;
   }
+  for (const c of clip.spriteIndexCurves || []) {
+    const i = sampleStepCurve(c.keys, t);
+    if (i === null) continue;
+    if (!out.has(c.path)) out.set(c.path, {});
+    out.get(c.path).spriteIndex = Math.round(i);
+  }
   return out;
 }
 
-module.exports = { sampleClip, sampleCurve, sampleScalarCurve, normalizeQuat };
+module.exports = { sampleClip, sampleCurve, sampleScalarCurve, sampleStepCurve, normalizeQuat };
