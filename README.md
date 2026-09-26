@@ -47,6 +47,14 @@ direto do `.scml` (sempre XML texto, nunca falha por isso).
 
 ## Producao de skins em escala (varios personagens, mesmo rig)
 
+O caminho curto: crie uma pasta com os SEUS PNGs por peca (mesmos nomes e mesmo tamanho de tela que o rig
+espera) e abra ela em **Selecionar pasta do personagem**. Sem `.scml`/`.unitypackage` na pasta, o app
+empresta o esqueleto e as animacoes do rig escolhido no seletor ao lado, e aplica o padrao de camadas
+salvo pra aquele rig. Nada de duplicar 1 MB de rig por personagem. O app avisa no log se faltar alguma
+peca. A arte de costas e de cada personagem -- ponha os `*-back.png` na propria pasta dele.
+
+O caminho longo (quando voce quer o pacote inteiro por perto):
+
 Pra desenhar centenas de personagens reaproveitando o mesmo esqueleto/animacao: duplique a pasta do
 personagem-base inteira e troque so os PNGs em `PNG/Vector Parts/`, mantendo o MESMO NOME DE ARQUIVO e o
 MESMO TAMANHO DE CANVAS de cada peca (o app desenha com `drawImage(img, x, y, w, h)` usando w/h do `.scml`,

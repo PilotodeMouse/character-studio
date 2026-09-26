@@ -154,10 +154,18 @@
     border-radius: 8px;
     margin-bottom: 8px;
   }
-  #preview-viewport { display: flex; gap: 12px; align-items: flex-start; }
+  /* padding pro contorno da direcao ativa nao ser cortado pelo overflow */
+  #preview-viewport { display: flex; gap: 12px; align-items: flex-start; padding: 8px; }
   #preview-viewport canvas { flex: 0 0 auto; }
   #preview-viewport canvas.mirrored-row { opacity: .85; }
-  #preview-viewport canvas.active-row { outline: 2px solid #5b8cff; outline-offset: 2px; }
+  /* A direcao em EDICAO: amarelo e grosso de proposito. O azul fino de antes
+     se perdia contra o quadriculado do fundo transparente, e nao saber qual
+     das quatro voce esta mexendo e a forma mais facil de estragar a errada. */
+  #preview-viewport canvas.active-row {
+    outline: 4px solid #ffc83d;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .55);
+  }
   #preview-viewport canvas.bg-checker {
     background:
       linear-gradient(45deg, #2a2d33 25%, transparent 25%) 0 0 / 16px 16px,
@@ -182,11 +190,12 @@
     <div id="mode-craftpix">
       <div class="card">
         <button id="btn-pick-pack">1. Selecionar pasta do personagem</button>
-        <div style="color:var(--muted); font-size:11px; margin:8px 0 4px;">ou, se voce so tem a arte propria (skin nova), use um rig embutido:</div>
-        <div class="row">
-          <select id="sel-template"><option value="">(escolher template)</option></select>
-          <button id="btn-pick-template" class="secondary" style="flex:0 0 auto;">Carregar template</button>
+        <div style="color:var(--muted); font-size:11px; margin:8px 0 4px;">
+          A pasta pode ser um pacote Craftpix completo, ou so os seus PNGs por peca
+          (<code>Body.png</code>, <code>Head.png</code>...). Nesse caso o app empresta o esqueleto e as
+          animacoes deste rig:
         </div>
+        <select id="sel-template" title="De onde vem o esqueleto e as animacoes quando a pasta escolhida so tem arte."></select>
         <div id="pack-info" style="margin-top:8px; color: var(--muted);"></div>
       </div>
 

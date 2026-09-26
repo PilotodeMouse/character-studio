@@ -70,6 +70,34 @@ function findRowArtDir(vectorPartsDir, row) {
   return null;
 }
 
+// Pastas de arte por direcao de um diretorio qualquer de PNGs -- usado tanto
+// pelo pacote completo quanto pela pasta que so tem a arte do usuario.
+function findRowArtDirs(vectorPartsDir) {
+  return {
+    north: findRowArtDir(vectorPartsDir, 'north'),
+    south: findRowArtDir(vectorPartsDir, 'south'),
+    west: findRowArtDir(vectorPartsDir, 'west'),
+  };
+}
+
+// Pasta que so tem a ARTE do personagem (os PNGs por peca), sem `.scml` nem
+// `.unitypackage`. E o formato pra produzir skins em escala: uma pasta de doze
+// arquivos por personagem, e o rig vem emprestado de um template embutido
+// (ver src/rig-templates.js) em vez de duplicar 1MB de rig por personagem.
+//
+// Aceita os PNGs soltos na pasta escolhida OU dentro de PNG/Vector Parts, pra
+// funcionar tanto com uma pasta criada a mao quanto com uma copia de pacote a
+// que faltam os arquivos de rig.
+function findArtOnlyDir(characterDir) {
+  const candidatos = [characterDir, path.join(characterDir, 'PNG', 'Vector Parts'), path.join(characterDir, 'Vector Parts')];
+  for (const dir of candidatos) {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) continue;
+    const temArte = fs.readdirSync(dir).some((f) => /\.(png|svg)$/i.test(f));
+    if (temArte) return dir;
+  }
+  return null;
+}
+
 function detectCraftpixClassic(characterDir) {
   const vectorPartsDir = path.join(characterDir, 'PNG', 'Vector Parts');
   const unityDir = path.join(characterDir, 'Unity Package');
@@ -85,14 +113,10 @@ function detectCraftpixClassic(characterDir) {
     scmlPath: path.join(vectorPartsDir, scmlFile),
     unitypackagePath: path.join(unityDir, unityFile),
     // null em cada direcao que o personagem nao tem desenhada
-    rowArtDirs: {
-      north: findRowArtDir(vectorPartsDir, 'north'),
-      south: findRowArtDir(vectorPartsDir, 'south'),
-      west: findRowArtDir(vectorPartsDir, 'west'),
-    },
+    rowArtDirs: findRowArtDirs(vectorPartsDir),
     defaultAnimationMap: { ...DEFAULT_ANIMATION_MAP },
     extraAnimations: EXTRA_ANIMATIONS,
   };
 }
 
-module.exports = { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS, BACK_ART_DIRNAMES, ROW_ART_DIRNAMES, ROW_ART_SUFFIXES };
+module.exports = { detectCraftpixClassic, findArtOnlyDir, findRowArtDirs, DEFAULT_ANIMATION_MAP, EXTRA_ANIMATIONS, BACK_ART_DIRNAMES, ROW_ART_DIRNAMES, ROW_ART_SUFFIXES };

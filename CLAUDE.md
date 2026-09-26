@@ -97,30 +97,29 @@ scml (nao ha `m_FloatCurves`). O nome da peca e o da timeline (`Body`, `Head`...
 Ao testar headless: `node-canvas` nao abre caminho com acento (`Bárbaro`) -- use
 `loadImage(fs.readFileSync(p))`. O app (Electron) le por buffer e nao sofre disso.
 
-## Templates de rig embutidos (`src/rig-templates.js` + pasta `templates/`)
+## Pasta so com PNGs: o app empresta o rig (`templates/` + `src/rig-templates.js`)
 
-Motivo: o usuario quer produzir "skins" (arte propria sobre o mesmo rig) sem precisar duplicar a pasta de
-um personagem-base da Craftpix a mao toda vez -- so quer soltar PNG/SVG por peca. `templates/<id>/` guarda
-uma copia completa de UM personagem-base (mesma estrutura `PNG/Vector Parts/Animations.scml` +
-`Unity Package/*.unitypackage`), versionada no proprio repo. `detectCraftpixClassic()` funciona nela sem
-adaptacao nenhuma -- e so mais uma pasta craftpix-classic, so que dentro do repo em vez de fora.
+O jeito de produzir skins em escala. O usuario cria uma pasta com os PNGs por peca dele (`Body.png`,
+`Head.png`, ... com os MESMOS nomes e o MESMO tamanho de tela do rig) e abre ela em "Selecionar pasta do
+personagem". Sem `.scml`/`.unitypackage` na pasta, `detectComRigEmprestado` (renderer/app.js) monta o
+`detected` com o `scmlPath` + `unitypackagePath` do template escolhido no dropdown `#sel-template` e
+`vectorPartsDir` apontando pra pasta do usuario. Dali pra frente e o mesmo `loadFromDetected` de sempre.
+`avisarPecasFaltando` lista no log as pecas que o rig espera e a pasta nao tem -- numa pasta montada a mao,
+esquecer um PNG e o erro mais facil de cometer e o mais dificil de notar.
 
-So `skeleton-crusader` esta embutido por enquanto (~1.1MB, copiado de
-`Esqueletos/Skeleton_Crusader_1` da biblioteca Craftpix do usuario). Adicionar outro arquetipo de corpo e
-so repetir o `cp` pra `templates/<novo-id>/` (mesma estrutura de pastas) e adicionar uma entrada em
-`TEMPLATES` (`src/rig-templates.js`).
+`findArtOnlyDir` (`src/craftpix-profile.js`) aceita os PNGs soltos na pasta escolhida ou dentro de
+`PNG/Vector Parts`. A arte de costas e de cada personagem: `*-back.png` na propria pasta dele (o template
+NAO empresta arte, so o esqueleto).
 
-Fluxo na UI (`renderer/app.js`): dropdown `#sel-template` + botao "Carregar template" chama
-`onPickTemplate()`, que carrega o rig com a arte DEFAULT do template inteira (mesmo caminho de
-`loadFromDetected()` que a pasta externa usa) e mostra `#template-parts-list` -- uma linha por peca
-canonica (`Body.png`, `Head.png`, ...) com botao "Carregar" (abre `select-image-file`, PNG ou SVG
-qualquer tamanho, `drawImage` escala pro w/h gravado no `.scml`) e "Padrao" pra reverter so aquela peca.
-Cada troca de peca so atualiza `state.images` + `state.alphaBoxes` daquela entrada e redesenha -- nao
-recarrega o `.unitypackage` nem as outras pecas.
+`templates/<id>/` continua guardando uma copia completa de UM personagem-base (so `skeleton-crusader` por
+enquanto, ~1.1MB), porque e de la que sai o `.scml` + `.unitypackage`. Adicionar outro arquetipo e copiar
+a pasta e por uma entrada em `TEMPLATES` (`src/rig-templates.js`).
 
-`onPickPack` (pasta externa) e `onPickTemplate` (template embutido) convergem no mesmo
-`loadFromDetected(detected, displayLabel)` logo depois de resolver o `detected` -- se mexer no fluxo de
-carregamento, mexa la, nao em cada um separado.
+HISTORICO: existia um botao "Carregar template" que abria o template COMO personagem, com a arte da
+Craftpix, e uma lista pra trocar peca por peca. Foi removido a pedido -- carregava o esqueleto errado e
+exigia doze dialogos de arquivo por personagem, pior que duplicar a pasta. O dropdown sobrou como "de qual
+rig emprestar". A pasta `templates/` em si nao tem a arte de costas do usuario, e era por isso que as 4
+direcoes saiam identicas naquele fluxo.
 
 ## Troca de sprite por animacao (piscar, careta de dor)
 
@@ -219,7 +218,11 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
 - A lista de camadas mostra o ARQUIVO em uso (`artFileInUse`), nao o nome canonico da peca: depois de trocar
   Sword por Axe a linha diz `axe.png`. `state.rowArtFiles` guarda isso por direcao.
 - Preview: um canvas por direcao (`#preview-canvas` e o de EAST, os outros `#preview-canvas-<row>`), "Lado a
-  lado" mostra todas as do arquivo; clicar num canvas o torna o editado. Na TELA elas ficam em
+  lado" mostra as QUATRO, mesmo na entrega de 2 linhas -- as quatro direcoes sempre chegam ao jogo, o que a
+  entrega muda e so quem as desenha, voce ou a Biblioteca. As que nao vao no arquivo dizem isso no proprio
+  rotulo da celula. Todas sao editaveis: mexer numa que nao ia obriga a entrega de 4 (`currentRowCount`).
+  Clicar num canvas o torna o editado, e ele ganha um contorno AMARELO grosso -- o azul fino de antes se
+  perdia no quadriculado, e ainda era cortado em cima/embaixo pelo `overflow` do viewport (daí o `padding`). Na TELA elas ficam em
   `PREVIEW_ORDER` (NORTH, WEST, SOUTH, EAST, via `style.order`), que e o personagem girando no proprio eixo
   em sentido anti-horario -- no ARQUIVO a ordem continua `ROWS`, que o padrao exige.
 - Arte de cada direcao casa por nome tolerante (`matchRowArtFiles` em `src/back-art.js`:

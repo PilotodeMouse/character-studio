@@ -16,7 +16,7 @@ const { getZIndexByPartName } = require('../src/scml-zorder');
 const { computeAlphaBoxes } = require('../src/alpha-bounds');
 const { mergeImagesForRow, matchRowArtFiles } = require('../src/back-art');
 const { computeRigFingerprint, RigProfileStore, characterOffsetsByRow } = require('../src/rig-profile');
-const { detectCraftpixClassic, DEFAULT_ANIMATION_MAP, ROW_ART_SUFFIXES } = require('../src/craftpix-profile');
+const { detectCraftpixClassic, findArtOnlyDir, findRowArtDirs, DEFAULT_ANIMATION_MAP, ROW_ART_SUFFIXES } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
 const { EXPORT, DEFAULT_SIZE, ROWS, MIRRORED_FROM, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 const { listTemplates, loadTemplate } = require('../src/rig-templates');
@@ -86,7 +86,6 @@ let state = {
   // (fallback direto do .scml, pra pacotes com .prefab binario). Decidido em
   // loadFromDetected; quem amostra pose passa por computePoseFn.
   poseSource: 'unity',
-  activeTemplate: null, // {id, dir, detected, partNames} quando a fonte e um template embutido, null quando e pasta externa
   // Trocar a arte de uma peca vale pras DUAS fontes (template ou pasta do
   // personagem). artSourceDir e a pasta de onde a arte original veio -- e o
   // que permite o botao "voltar ao padrao" reler o arquivo do disco.
@@ -144,23 +143,31 @@ async function onPickPack() {
   const folder = await ipcRenderer.invoke('select-pack-folder');
   if (!folder) return;
   state.packFolder = folder;
-  state.activeTemplate = null;
   document.getElementById('template-parts-section').style.display = 'none';
 
-  const detected = detectCraftpixClassic(folder);
+  const detected = detectCraftpixClassic(folder) || detectComRigEmprestado(folder);
   const profileBanner = document.getElementById('profile-banner');
   if (!detected) {
     banner(
       profileBanner,
       'err',
-      `Nao encontrei "PNG/Vector Parts/Animations.scml" + "Unity Package/*.unitypackage" nessa pasta. Selecione a pasta de UM personagem (ex: ".../Esqueletos/Skeleton_Crusader_1") -- ou use um template embutido acima, se voce so tem a arte propria.`
+      `Nao achei nem um pacote completo ("PNG/Vector Parts/Animations.scml" + "Unity Package/*.unitypackage") nem PNGs nessa pasta. Selecione a pasta de UM personagem, ou uma pasta com os PNGs por peca (Body.png, Head.png...) -- nesse caso o app empresta o rig do template escolhido acima.`
     );
     document.getElementById('pack-info').textContent = path.basename(folder);
     return;
   }
-  banner(profileBanner, 'ok', `Perfil detectado: <code>craftpix-classic</code>.`);
+  if (detected.rigEmprestadoDe) {
+    banner(
+      profileBanner,
+      'ok',
+      `Arte desta pasta + rig emprestado do template <code>${detected.rigEmprestadoDe}</code>. As animacoes vem do rig; os desenhos sao todos seus.`
+    );
+  } else {
+    banner(profileBanner, 'ok', `Perfil detectado: <code>craftpix-classic</code>.`);
+  }
   document.getElementById('txt-character-name').value = toKebabCase(path.basename(folder));
   await loadFromDetected(detected, path.basename(folder));
+  if (detected.rigEmprestadoDe) avisarPecasFaltando();
 }
 
 // Fluxo alternativo: o rig (.scml + .unitypackage) vem embutido no proprio
@@ -168,21 +175,38 @@ async function onPickPack() {
 // escolher o template, carrega primeiro com a arte DEFAULT dele (pra ja dar
 // pra ver/animar), e cada peca pode ser trocada individualmente depois pela
 // lista que renderTemplatePartsList() monta.
-async function onPickTemplate() {
-  const templateId = document.getElementById('sel-template').value;
-  if (!templateId) return;
-  const template = loadTemplate(templateId);
-  state.packFolder = null;
-  state.activeTemplate = template;
+// Pasta que so tem a ARTE do personagem: o rig vem emprestado de um template
+// embutido. E o fluxo pra produzir skins em escala -- uma pasta de doze PNGs
+// por personagem, em vez de duplicar o `.scml` + `.unitypackage` (1MB) em cada
+// uma. A arte e inteira do usuario; do template vem so o esqueleto.
+function detectComRigEmprestado(folder) {
+  const artDir = findArtOnlyDir(folder);
+  if (!artDir) return null;
+  const templates = listTemplates();
+  if (!templates.length) return null;
+  const escolhido = document.getElementById('sel-template').value;
+  const template = loadTemplate(escolhido || templates[0].id);
+  if (!template) return null;
+  return {
+    ...template.detected,
+    profile: 'arte-com-rig-emprestado',
+    vectorPartsDir: artDir, // a arte e a da pasta escolhida, nao a do template
+    rowArtDirs: findRowArtDirs(artDir),
+    rigEmprestadoDe: template.id,
+  };
+}
 
-  const profileBanner = document.getElementById('profile-banner');
-  banner(profileBanner, 'ok', `Template embutido carregado: <code>${template.id}</code>. Troque as pecas que quiser abaixo -- as que voce nao trocar usam a arte default do template.`);
-  document.getElementById('txt-character-name').value = '';
-
-  // renderTemplatePartsList() depende de state.rig (pra saber quais pecas NAO
-  // tem osso) e de partArtOverrides zerado -- as duas coisas so existem
-  // depois do loadFromDetected, que chama as duas listas no final.
-  await loadFromDetected(template.detected, template.id);
+// Avisa quais pecas o rig espera e a pasta nao tem -- numa pasta montada a
+// mao, esquecer um PNG e o erro mais facil de cometer e o mais dificil de
+// perceber: a peca simplesmente nao aparece.
+function avisarPecasFaltando() {
+  if (!state.rig) return;
+  const faltando = [...state.rig.bones.values()]
+    .filter((b) => b.sprite && b.sprite.pngName && !state.images.has(b.sprite.pngName))
+    .map((b) => b.sprite.pngName);
+  if (faltando.length) {
+    log(`Faltam ${faltando.length} pecas nesta pasta: ${faltando.join(', ')}. Elas nao vao aparecer no bake.`, 'warn');
+  }
 }
 
 // So as pecas que NENHUM osso usa (faces alternativas, etc.) -- as que tem
@@ -898,12 +922,12 @@ function updateRowControls() {
   if (forcedFour) rowCountSel.value = '4';
   rowCountSel.disabled = forcedFour;
 
-  const delivered = deliveredRows();
-  // So da pra editar uma direcao que existe no arquivo.
-  if (!delivered.includes(state.previewRow)) setEditingRow('east');
-
+  // As QUATRO direcoes sempre chegam ao jogo -- o que a entrega de 2 linhas
+  // muda e so quem as desenha, voce ou a Biblioteca do VTT. Entao todas sao
+  // visiveis e editaveis aqui; mexer numa que nao ia no arquivo simplesmente
+  // obriga a entrega de 4 (ver currentRowCount), porque a Biblioteca so sabe
+  // espelhar e nao conhece o seu ajuste.
   const sel = document.getElementById('preview-sel-row');
-  for (const opt of sel.options) opt.disabled = !delivered.includes(opt.value);
   sel.value = state.previewRow;
 
   const row = state.previewRow;
@@ -949,7 +973,7 @@ function onPreviewTime() {
   const delivered = deliveredRows();
   const active = state.previewRow;
   const side = document.getElementById('preview-chk-side').checked;
-  const shown = side ? delivered : [active];
+  const shown = side ? ROWS : [active];
   for (const row of ROWS) {
     const canvas = canvasForRow(row);
     // A ORDEM NA TELA nao e a ordem do arquivo: na tela elas aparecem como se
@@ -1116,9 +1140,15 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
     ctx.fillText(usable, cell.w - ctx.measureText(usable).width - 6, cell.groundLineY + 4);
     ctx.fillText(`${cell.w}x${cell.h}`, 6, 6);
     // Qual direcao e esta -- com 4 celulas na tela, sem rotulo nao da pra saber.
-    const label = row.toUpperCase() + (isMirrored(row) ? ` (espelho de ${MIRRORED_FROM[row].toUpperCase()})` : '');
+    // Diz de onde a direcao vem e, em segunda linha, se ela NAO vai no
+    // arquivo -- numa entrega de 2 linhas SOUTH e WEST aparecem aqui, mas
+    // quem as gera e a Biblioteca. Tudo numa linha so estourava a celula.
     ctx.fillStyle = '#5b8cff';
-    ctx.fillText(label, 6, 6 + fs + 4);
+    ctx.fillText(row.toUpperCase() + (isMirrored(row) ? ` (espelho de ${MIRRORED_FROM[row].toUpperCase()})` : ''), 6, 6 + fs + 4);
+    if (!deliveredRows().includes(row)) {
+      ctx.fillStyle = 'rgba(91,140,255,.65)';
+      ctx.fillText('a Biblioteca do VTT gera esta', 6, 6 + (fs + 4) * 2);
+    }
 
     ctx.restore();
   }
@@ -1916,6 +1946,7 @@ async function onBakeClick() {
 // carregamento da tela -- nao depende de nenhuma pasta ser selecionada.
 (function initTemplateDropdown() {
   const sel = document.getElementById('sel-template');
+  sel.innerHTML = '';
   for (const t of listTemplates()) {
     const opt = document.createElement('option');
     opt.value = t.id;
@@ -1925,7 +1956,6 @@ async function onBakeClick() {
 })();
 
 document.getElementById('btn-pick-pack').addEventListener('click', onPickPack);
-document.getElementById('btn-pick-template').addEventListener('click', onPickTemplate);
 document.getElementById('chk-has-north').addEventListener('change', (e) => {
   document.getElementById('sel-anim-north').disabled = !e.target.checked;
 });
