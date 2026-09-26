@@ -211,6 +211,9 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   proximos personagens do mesmo rig abrem ja arrumados; e o que torna viavel produzir centenas de skins.
   Guarda a camada geral E uma entrada por animacao (`clips[nomeDoClip]`), senao o que foi arrumado com a
   caixa ligada (o padrao) nao entraria.
+  A arte e gravada pra TODAS as pecas, inclusive as que usam o nome base. Pular as "iguais ao base" parecia
+  economia e era bug: voltar o escudo do WEST pra `Shield.png` E uma escolha (direcao de costas comeca com
+  `shield-back` por padrao), e descartando ela o proximo personagem voltava sozinho pro `-back`.
   NAO entra dx/dy/angulo/pivo/escala/amortecimento: sao correcoes na arte de UM personagem, e herdar isso e
   exatamente o erro que o formato v1 cometia (comentario grande no topo de `src/rig-profile.js`).
   Ajuste do proprio personagem tem prioridade: o padrao do rig so e aplicado quando as 4 direcoes dele

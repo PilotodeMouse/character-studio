@@ -1378,14 +1378,17 @@ function captureRowDefaults() {
 
   const out = {};
   for (const row of ROWS) {
-    // Geral da direcao: arte vinda do disco + trocas feitas com a caixa
-    // "so nesta animacao" DESLIGADA.
+    // Geral da direcao: grava o arquivo de TODAS as pecas, inclusive as que
+    // usam o nome base. Nao da pra pular "igual ao base": voltar o escudo do
+    // WEST pra Shield.png E uma escolha (a direcao de costas comeca com
+    // shield-back por padrao), e descartando ela a direcao voltava sozinha
+    // pro -back no proximo personagem. Gravando tudo, o que se aplica e
+    // exatamente o que voce viu.
     const arteGeral = {};
     for (const bone of state.rig.bones.values()) {
       const png = bone.sprite && bone.sprite.pngName;
       if (!png) continue;
-      const nome = nomeDaArteGeral(row, png);
-      if (nome && nome !== png) arteGeral[png] = nome;
+      arteGeral[png] = nomeDaArteGeral(row, png) || png;
     }
 
     const clips = {};
