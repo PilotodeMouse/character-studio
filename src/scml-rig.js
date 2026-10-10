@@ -202,7 +202,12 @@ function clipsFromScml(entity) {
 
 // Caixa envolvente da animacao inteira, equivalente a computeAnimatedBounds
 // de unity-skeleton.js (mesma finalidade: alimentar fitScaleForBounds).
-function computeScmlBounds(clip, pivots, samples = 12) {
+// alphaBoxes (opcional): Map<nomeDoPNG, {x,y,w,h}|null> de src/alpha-bounds.js.
+// Sem ele mede o RETANGULO CHEIO do PNG, e nesses pacotes 40-60% da imagem e
+// moldura transparente -- o auto-fit encolhe o personagem sem necessidade.
+// Medido no Assassino: 0.748 de escala pra uma figura que ocupava um quarto da
+// celula. Mesmo motivo do alphaBoxes em computeAnimatedBounds (unity-skeleton).
+function computeScmlBounds(clip, pivots, samples = 12, alphaBoxes = null) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i <= samples; i++) {
     const t = (i / samples) * clip.length;
@@ -211,6 +216,8 @@ function computeScmlBounds(clip, pivots, samples = 12) {
       const filePivot = pivots.get(item.sprite.pngName);
       if (!filePivot) continue;
       const pv = item.pivotOverride ? { ...filePivot, ...item.pivotOverride } : filePivot;
+      const box = alphaBoxes ? alphaBoxes.get(item.sprite.pngName) : undefined;
+      if (box === null) continue; // peca 100% transparente nao ocupa espaco
       const w = pv.width;
       const h = pv.height;
       const px = item.world.x;
@@ -218,13 +225,15 @@ function computeScmlBounds(clip, pivots, samples = 12) {
       const angleRad = (-item.world.angle * Math.PI) / 180;
       const cos = Math.cos(angleRad);
       const sin = Math.sin(angleRad);
-      const offsetX = -pv.pivotX * w;
-      const offsetY = -(1 - pv.pivotY) * h;
+      const offsetX = -pv.pivotX * w + (box ? box.x : 0);
+      const offsetY = -(1 - pv.pivotY) * h + (box ? box.y : 0);
+      const bw = box ? box.w : w;
+      const bh = box ? box.h : h;
       for (const [lx, ly] of [
         [offsetX, offsetY],
-        [offsetX + w, offsetY],
-        [offsetX, offsetY + h],
-        [offsetX + w, offsetY + h],
+        [offsetX + bw, offsetY],
+        [offsetX, offsetY + bh],
+        [offsetX + bw, offsetY + bh],
       ]) {
         const sxp = lx * item.world.scaleX;
         const syp = ly * item.world.scaleY;

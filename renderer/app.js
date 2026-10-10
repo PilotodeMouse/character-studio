@@ -28,6 +28,7 @@ const { computeAlphaBoxes } = require('../src/alpha-bounds');
 const { mergeImagesForRow, matchRowArtFiles } = require('../src/back-art');
 const { computeRigFingerprint, RigProfileStore, characterOffsetsByRow } = require('../src/rig-profile');
 const { detectCraftpixClassic, findArtOnlyDir, findRowArtDirs, DEFAULT_ANIMATION_MAP, ROW_ART_SUFFIXES } = require('../src/craftpix-profile');
+const { detectarVistasNativas, basesComuns, clipDaVista, partirNomeDeAnimacao } = require('../src/native-views');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
 const { EXPORT, DEFAULT_SIZE, ROWS, ARRANJOS, ARRANJO_PADRAO, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 const { listTemplates, loadTemplate } = require('../src/rig-templates');
@@ -53,6 +54,7 @@ let state = {
   // NORTH e EAST sao sempre 'own': o padrao exige as duas desenhadas.
   zIndexByName: new Map(), // ordem de REFERENCIA (1a key da 1a animacao) -- lista de camadas
   zOrderIndex: new Map(), // ordem por animacao e por instante -- desenho (ver src/scml-zorder.js)
+  nativeViews: null, // {north:'back',east:'right',...} quando o pacote ja traz as 4 vistas
   rigId: null,
   outputFolder: null,
   // Ajustes manuais INDEPENDENTES por vista: mexer no NORTH (costas) nao pode
@@ -157,7 +159,7 @@ async function onPickPack() {
   state.packFolder = folder;
   document.getElementById('template-parts-section').style.display = 'none';
 
-  const detected = detectCraftpixClassic(folder) || detectComRigEmprestado(folder);
+  const detected = detectCraftpixClassic(folder) || detectRigProprioSemUnity(folder) || detectComRigEmprestado(folder);
   const profileBanner = document.getElementById('profile-banner');
   if (!detected) {
     banner(
@@ -173,6 +175,22 @@ async function onPickPack() {
       profileBanner,
       'ok',
       `Arte desta pasta + rig emprestado do template <code>${detected.rigEmprestadoDe}</code>. As animacoes vem do rig; os desenhos sao todos seus.`
+    );
+  } else if (detected.profile === 'craftpix-4-vistas') {
+    banner(
+      profileBanner,
+      'ok',
+      `Perfil detectado: <code>craftpix-4-vistas</code>. Este pacote JA TRAZ as quatro direcoes desenhadas, ` +
+        `cada uma com a arte e a ordem de camadas dela. Espelho, troca de lados e arte de costas ficam desligados -- ` +
+        `nao ha nada a inventar aqui.`
+    );
+  } else if (detected.profile === 'rig-proprio') {
+    banner(
+      profileBanner,
+      'ok',
+      `Perfil detectado: <code>rig-proprio</code>. Esta pasta traz o esqueleto dela no <code>.scml</code> e nao ` +
+        `precisa de template emprestado -- e o caso dos pacotes de criatura, que nao tem bracos nem o mesmo ` +
+        `esqueleto dos humanoides.`
     );
   } else {
     banner(profileBanner, 'ok', `Perfil detectado: <code>craftpix-classic</code>.`);
@@ -191,6 +209,78 @@ async function onPickPack() {
 // embutido. E o fluxo pra produzir skins em escala -- uma pasta de doze PNGs
 // por personagem, em vez de duplicar o `.scml` + `.unitypackage` (1MB) em cada
 // uma. A arte e inteira do usuario; do template vem so o esqueleto.
+// Pasta que traz o PROPRIO rig (um `.scml` completo) e nao tem `.unitypackage`.
+// Dois casos reais: os pacotes Craftpix com as 4 vistas desenhadas (Assassino,
+// Robber, Thug) e os pacotes de CRIATURA (os dez monstros do pack de tower
+// defense: Idle/Attack/Fly/Fall/Dying, 3 a 7 pecas). Sem isto eles caiam no rig
+// EMPRESTADO -- o app descartava o `.scml` deles, montava o esqueleto humanoide
+// do template e avisava "faltam 8 pecas", prendendo a arte de um morcego num
+// esqueleto de cavaleiro.
+//
+// A condicao NAO pode ser so "tem .scml": a pasta so-de-PNG do usuario tambem
+// costuma ter um `Animations.scml` junto (o Golem tem), e ali o certo continua
+// sendo emprestar. O discriminador e medido: o `.scml` da pasta tem alguma
+// ANIMACAO que o template nao tem? O Golem tem exatamente as mesmas 18 do
+// Skeleton Crusader -- e copia do mesmo rig, emprestar ou usar o proprio da no
+// mesmo, entao nao se mexe. O Monster_1 tem Attack/Fly/Fall, que o template nao
+// tem: e outro bicho, literalmente.
+//
+// Alem disso o `.scml` precisa ser auto-suficiente: toda peca que ele cita tem
+// que existir na pasta. Um `.scml` orfao, sem a arte, nao e rig nenhum.
+function animacoesDoTemplate() {
+  const templates = listTemplates();
+  if (!templates.length) return null;
+  const escolhido = document.getElementById('sel-template').value;
+  const template = loadTemplate(escolhido || templates[0].id);
+  if (!template || !template.detected || !template.detected.scmlPath) return null;
+  try {
+    const ent = parseSCML(fs.readFileSync(template.detected.scmlPath, 'utf8')).entities[0];
+    return new Set(ent.animations.map((a) => a.name));
+  } catch (err) {
+    return null;
+  }
+}
+
+function detectRigProprioSemUnity(folder) {
+  const artDir = findArtOnlyDir(folder);
+  if (!artDir) return null;
+  const scml = fs
+    .readdirSync(artDir)
+    .filter((f) => f.toLowerCase().endsWith('.scml') && !/autosave/i.test(f))
+    .map((f) => path.join(artDir, f))[0];
+  if (!scml) return null;
+
+  let parsed;
+  try {
+    parsed = parseSCML(fs.readFileSync(scml, 'utf8'));
+  } catch (err) {
+    return null;
+  }
+  const ent = parsed.entities[0];
+  if (!ent || !ent.animations.length) return null;
+
+  const naPasta = new Set(fs.readdirSync(artDir).filter((f) => /\.png$/i.test(f)));
+  for (const pasta of Object.values(parsed.folders)) {
+    for (const arquivo of Object.values(pasta)) {
+      if (!naPasta.has(arquivo.name)) return null; // .scml orfao
+    }
+  }
+
+  const nomes = ent.animations.map((a) => a.name);
+  if (!detectarVistasNativas(nomes)) {
+    const doTemplate = animacoesDoTemplate();
+    if (!doTemplate || nomes.every((n) => doTemplate.has(n))) return null;
+  }
+
+  return {
+    profile: detectarVistasNativas(nomes) ? 'craftpix-4-vistas' : 'rig-proprio',
+    vectorPartsDir: artDir,
+    scmlPath: scml,
+    unitypackagePath: null,
+    rowArtDirs: findRowArtDirs(artDir),
+  };
+}
+
 function detectComRigEmprestado(folder) {
   const artDir = findArtOnlyDir(folder);
   if (!artDir) return null;
@@ -345,12 +435,14 @@ function animacaoDe(row) {
 }
 
 // A direcao de onde uma linha tira a POSE. A ARTE e sempre da propria linha.
+// Num pacote de 4 vistas cada linha e DESENHADA: ela e fonte de si mesma e nao
+// espelha ninguem. O arranjo (`#sel-mirror-pairing`) nao se aplica.
 function sourceRowFor(row) {
-  return animacaoDe(row)[0];
+  return state.nativeViews ? row : animacaoDe(row)[0];
 }
 
 function isMirrored(row) {
-  return animacaoDe(row)[1];
+  return state.nativeViews ? false : animacaoDe(row)[1];
 }
 
 // Quem esta sendo espelhado na tela, so pra rotular. Numa troca de animacao a
@@ -365,6 +457,32 @@ function espelhoDe(row) {
 // editar, so a camada de cima -- que e o que `state.partOffsets` devolve.
 // Nome do clip que o preview esta mostrando -- e a chave da camada por
 // animacao. Antes do rig carregar nao ha clip nenhum.
+// Num pacote de 4 vistas o usuario escolhe a animacao pela BASE ("Idle"), nao
+// pelo nome cheio de uma das vistas ("Front - Idle"): sao 5 opcoes em vez de
+// 24, e qual vista toca e decidido pela LINHA, nao pelo seletor. Este
+// resolvedor aceita os dois e devolve um clip de verdade.
+function clipPorNomeOuBase(nome) {
+  if (!nome || !state.rig) return null;
+  const direto = state.rig.clips.find((c) => c.name === nome);
+  if (direto) return direto;
+  if (!state.nativeViews) return null;
+  const nomes = state.rig.clips.map((c) => c.name);
+  const alvo = clipDaVista(nomes, state.nativeViews, 'south', nome);
+  return state.rig.clips.find((c) => c.name === alvo) || null;
+}
+
+// O clip que ESTA linha toca. Num pacote de 4 vistas cada direcao tem a
+// animacao dela (`Back - Idle` pro NORTH, `Left - Idle` pro WEST); fora disso a
+// linha toca o clip da direcao-fonte, como sempre.
+function clipParaLinha(row, clipBase) {
+  if (!state.nativeViews || !clipBase) return clipBase;
+  const p = partirNomeDeAnimacao(clipBase.name);
+  if (!p) return clipBase;
+  const nomes = state.rig.clips.map((c) => c.name);
+  const alvo = clipDaVista(nomes, state.nativeViews, row, p.base);
+  return state.rig.clips.find((c) => c.name === alvo) || clipBase;
+}
+
 function previewClipName() {
   const sel = document.getElementById('preview-sel-anim');
   return (sel && sel.value) || '';
@@ -652,6 +770,11 @@ async function loadFromDetected(detected, displayLabel) {
   const parsedScml = parseSCML(scmlText);
   state.zIndexByName = getZIndexByPartName(parsedScml);
   state.zOrderIndex = buildZOrderIndex(parsedScml);
+  // Pacote que ja traz as 4 vistas desenhadas (ver src/native-views.js). Daqui
+  // pra frente nao ha nada a inventar: espelho, troca de lados em profundidade
+  // e arte de costas ficam todos DESLIGADOS, e cada linha toca a animacao da
+  // vista dela.
+  state.nativeViews = detectarVistasNativas(parsedScml.entities[0].animations.map((a) => a.name));
 
   state.pivots = new Map();
   for (const files of Object.values(parsedScml.folders)) {
@@ -674,7 +797,11 @@ async function loadFromDetected(detected, displayLabel) {
   state.rowArt = Object.fromEntries(ROWS.map((r) => [r, new Map()]));
   state.rowArtFiles = Object.fromEntries(ROWS.map((r) => [r, new Map()]));
   state.rowArtSources = Object.fromEntries(ROWS.map((r) => [r, []]));
-  for (const row of ROWS) {
+  // Num pacote de 4 vistas isto nao se aplica: a arte de cada direcao ja vem
+  // dentro da animacao dela (`Body - Back.png` e a peca que a timeline do clip
+  // `Back - Idle` referencia). Pior, o casamento por sufixo acharia
+  // "Body - Back.png" e o grudaria como arte de costas de outra peca.
+  for (const row of state.nativeViews ? [] : ROWS) {
     const sources = state.rowArtSources[row];
     const dir = detected.rowArtDirs && detected.rowArtDirs[row];
     if (dir) sources.push([dir, false]);
@@ -711,10 +838,11 @@ async function loadFromDetected(detected, displayLabel) {
   // monta nem anima" sem erro nenhum na tela). O .scml e sempre XML texto e
   // tem as animacoes completas (src/scml-rig.js, ja validado); cai pra ele
   // quando o caminho do Unity nao rende nada.
-  log(`Extraindo ${path.basename(detected.unitypackagePath)}...`);
   state.poseSource = 'unity';
   state.rig = null;
+  if (detected.unitypackagePath) log(`Extraindo ${path.basename(detected.unitypackagePath)}...`);
   try {
+    if (!detected.unitypackagePath) throw new Error('pacote sem .unitypackage');
     const pkg = await extractUnityPackage(detected.unitypackagePath);
     const prefabGuid = pkg.findGuidByPathnameSuffix('.prefab');
     if (!prefabGuid) throw new Error('sem .prefab no .unitypackage');
@@ -722,7 +850,7 @@ async function loadFromDetected(detected, displayLabel) {
     if (unityRig.bones.size === 0 || unityRig.clips.length === 0) throw new Error('.prefab sem ossos/clips (provavelmente binario)');
     state.rig = unityRig;
   } catch (err) {
-    log(`Caminho do Unity nao rendeu (${err.message}) -- usando o .scml direto.`, 'warn');
+    if (detected.unitypackagePath) log(`Caminho do Unity nao rendeu (${err.message}) -- usando o .scml direto.`, 'warn');
   }
 
   if (!state.rig) {
@@ -730,13 +858,21 @@ async function loadFromDetected(detected, displayLabel) {
     const scmlClips = clipsFromScml(parsedScml.entities[0]);
     // bones "de mentirinha": so o suficiente pra alimentar o painel de
     // camadas/hit-test/follow-bone, que esperam Map<nome, {name, sprite}>.
-    // Amostra o primeiro clip em t=0 -- todas as animacoes do mesmo entity
-    // compartilham as mesmas timelines de sprite, entao qualquer uma revela
-    // as pecas todas.
-    const samplePose = scmlClips.length ? computeScmlPose(scmlClips[0].animation, 0) : [];
-    const pseudoBones = new Map(samplePose.map((item) => [item.boneName, { name: item.boneName, sprite: item.sprite }]));
+    // Amostra TODOS os clips, nao so o primeiro: num pacote de 4 vistas cada
+    // vista tem as timelines dela (`Body - Front` e `Body - Back` sao pecas
+    // diferentes), entao uma animacao so revelaria um quarto das pecas.
+    const pseudoBones = new Map();
+    for (const c of scmlClips) {
+      for (const item of computeScmlPose(c.animation, 0)) {
+        if (!pseudoBones.has(item.boneName)) pseudoBones.set(item.boneName, { name: item.boneName, sprite: item.sprite });
+      }
+    }
     state.rig = { clips: scmlClips, bones: pseudoBones };
-    log('Fonte da animacao: .scml direto (prefab binario). Amortecimento de balanco (Damp X/Y/Angulo) ainda nao tem efeito nesse modo.', 'warn');
+    log(
+      `Fonte da animacao: .scml direto (${detected.unitypackagePath ? 'prefab binario' : 'o pacote nao tem .unitypackage'}). ` +
+        'Amortecimento de balanco (Damp X/Y/Angulo) ainda nao tem efeito nesse modo.',
+      'warn'
+    );
   }
 
   document.getElementById('pack-info').textContent =
@@ -754,7 +890,14 @@ async function loadFromDetected(detected, displayLabel) {
   document.getElementById('preview-chk-side').checked = true;
   updateRowControls();
 
-  const clipNames = state.rig.clips.map((c) => c.name).filter((n) => n !== 'Base');
+  const todosOsNomes = state.rig.clips.map((c) => c.name);
+  // Com as 4 vistas, o seletor lista as BASES comuns as quatro (5 opcoes em vez
+  // de 24). Uma base que falte em alguma vista fica de fora de proposito: ela
+  // deixaria uma linha vazia no bake -- nesses pacotes o `Back` nao tem
+  // "Idle Blinking", por exemplo.
+  const clipNames = state.nativeViews
+    ? basesComuns(todosOsNomes, state.nativeViews)
+    : todosOsNomes.filter((n) => n !== 'Base');
   const optionsHtml = clipNames.map((n) => `<option value="${n}">${n}</option>`).join('');
   document.getElementById('sel-anim-idle').innerHTML = optionsHtml;
   document.getElementById('sel-anim-walk').innerHTML = '<option value="">(nenhuma)</option>' + optionsHtml;
@@ -798,7 +941,7 @@ async function loadFromDetected(detected, displayLabel) {
   // So o NORTH: o WEST e espelho dele e herda a ordem ja arrumada. Gravar
   // zIndex no WEST tambem o faria contar como "tem ajuste proprio" e forcaria
   // o arquivo de 4 linhas sem necessidade.
-  if (state.rowArt.north.size && !temOrdemPropria('north')) {
+  if (!state.nativeViews && state.rowArt.north.size && !temOrdemPropria('north')) {
     applyBackViewDepth(state.partOffsetsByRow.north);
     log('NORTH: profundidade das camadas ja espelhada automaticamente.', 'ok');
   }
@@ -808,12 +951,14 @@ async function loadFromDetected(detected, displayLabel) {
   // vira (ver sideSwapDepthOrder). A condicao e so sobre ORDEM -- dx/dy/escala
   // da direcao nao impedem, sao outra conversa; ordem propria, essa sim, e do
   // usuario e nao se mexe.
-  const trocadas = ROWS.filter((r) => isMirrored(r) && !temOrdemPropria(r) && applySideSwapDepth(r));
-  const escudosVirados = await arteDoEscudoPorLado();
+  const trocadas = state.nativeViews ? [] : ROWS.filter((r) => isMirrored(r) && !temOrdemPropria(r) && applySideSwapDepth(r));
+  const escudosVirados = state.nativeViews ? [] : await arteDoEscudoPorLado();
   if (trocadas.length) {
+    const temMao = !!maoDaArma();
     log(
-      `${trocadas.map((r) => r.toUpperCase()).join(' e ')}: lados trocados em profundidade, pra espada continuar na mesma mao do ` +
-        'personagem depois de virar. Isso obriga a entrega de 4 linhas: a Biblioteca sabe espelhar, nao sabe trocar os lados.',
+      `${trocadas.map((r) => r.toUpperCase()).join(' e ')}: lados trocados em profundidade` +
+        (temMao ? ', pra espada continuar na mesma mao do personagem depois de virar' : ' (o lado de ca do corpo vira o de la quando o personagem se vira)') +
+        '. Isso obriga a entrega de 4 linhas: a Biblioteca sabe espelhar, nao sabe trocar os lados.',
       'ok'
     );
   }
@@ -984,19 +1129,19 @@ function computePoseFn(clip, t, offsets = state.partOffsets) {
 }
 
 function computeBoundsFn(clip) {
-  if (state.poseSource === 'scml') return computeScmlBounds(clip, state.pivots);
+  if (state.poseSource === 'scml') return computeScmlBounds(clip, state.pivots, 12, state.alphaBoxes);
   return computeAnimatedBounds(state.rig, clip, state.pivots, state.partOffsets, state.alphaBoxes);
 }
 
 function readConfig() {
-  const idleClip = state.rig.clips.find((c) => c.name === document.getElementById('sel-anim-idle').value);
+  const idleClip = clipPorNomeOuBase(document.getElementById('sel-anim-idle').value);
   const walkName = document.getElementById('sel-anim-walk').value;
-  const walkClip = walkName ? state.rig.clips.find((c) => c.name === walkName) : null;
+  const walkClip = walkName ? clipPorNomeOuBase(walkName) : null;
   const northName = document.getElementById('sel-anim-north').value;
   return {
     idleClip,
     walkClip,
-    northClip: northName ? state.rig.clips.find((c) => c.name === northName) : null,
+    northClip: northName ? clipPorNomeOuBase(northName) : null,
     hasNorthView: document.getElementById('chk-has-north').checked,
     size: document.getElementById('sel-size').value,
     framesIdle: parseInt(document.getElementById('num-frames-idle').value, 10),
@@ -1024,14 +1169,19 @@ function rowsFor(cfg, kind) {
   const clipFor = { north: northClip, east: eastClip, south: eastClip, west: northClip };
 
   return deliveredRows().map((row) => {
-    const clip = clipFor[sourceRowFor(row)];
+    const clip = clipParaLinha(row, clipFor[sourceRowFor(row)]);
     // Placeholder (a linha vira uma copia da pose de EAST) SO faz sentido pra
     // direcao que mostra as COSTAS e nao tem arte de costas nenhuma. Direcao de
     // FRENTE sempre tem arte: a base da Vector Parts. Antes isto era
     // `row === 'east' || rowArt.size > 0`, e ai, num arranjo onde o SOUTH e uma
     // direcao desenhada, ele caia no placeholder e o bake usava os ajustes do
     // EAST -- inclusive a troca de lados que e do EAST, nao dele.
-    const ownArt = !BACK_ROWS.has(row) || state.rowArt[row].size > 0;
+    // Num pacote de 4 vistas TODA linha tem arte propria: ela vem dentro da
+    // animacao da vista, nao do rowArt. Sem isto o bakeGrid tratava NORTH e
+    // WEST como placeholder e trocava o clip deles pelo do EAST -- medido, as
+    // tres linhas saiam PIXEL-IDENTICAS no .webp enquanto o preview mostrava
+    // as quatro certas.
+    const ownArt = !!state.nativeViews || !BACK_ROWS.has(row) || state.rowArt[row].size > 0;
     return {
       row,
       clip,
@@ -1052,9 +1202,7 @@ function rowsFor(cfg, kind) {
 // nao so idle/walk: arma e SlashFX so tem alpha > 0 nos clips de ataque, e
 // e olhando o Slashing que da pra conferir a arte de arma nova.
 function previewBaseClip(cfg) {
-  const want = document.getElementById('preview-sel-anim').value;
-  const byName = state.rig && state.rig.clips.find((c) => c.name === want);
-  return byName || cfg.idleClip;
+  return clipPorNomeOuBase(document.getElementById('preview-sel-anim').value) || cfg.idleClip;
 }
 
 // Reflete na UI quantas linhas o arquivo vai ter e o estado da direcao em
@@ -1188,7 +1336,7 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   // Direcao espelhada nao tem nada de seu: mostra a fonte, invertida.
   const src = sourceRowFor(row);
   const showsBack = BACK_ROWS.has(src);
-  const previewClip = showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
+  const previewClip = clipParaLinha(row, showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip);
   // Os AJUSTES continuam sendo os da propria linha, mesmo quando o movimento
   // vem de outra: senao arrumar as camadas de uma direcao nao teria efeito
   // nenhum, e o painel mostraria uma coisa e a tela desenharia outra.
@@ -2547,6 +2695,7 @@ document.getElementById('tab-template').addEventListener('click', () => setMode(
 window.__studio = {
   state,
   computePoseFn,
+  computeBoundsFn,
   applyManualOverrides,
   applyHandTransplant,
   effectiveOffsets,

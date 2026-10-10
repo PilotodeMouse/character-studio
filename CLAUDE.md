@@ -14,11 +14,7 @@ arquivo de teste. Ja houve um `scratch-msg.txt` commitado por engano com `git ad
 arquivos pelo NOME, nunca `-A`.
 
 O QUE ESTA EM ABERTO:
-1. **Pacotes com as 4 vistas NATIVAS** (`Assassino`, `Robber`, `Thug` -- ver a secao "Duas GERACOES"). O
-   app ainda trata `Front - Idle` como idle e espelha o resto, entao esses 3 saem errados. O mapeamento
-   direto (`NORTH <- Back`, `EAST <- Right`, `SOUTH <- Front`, `WEST <- Left`, cada um com a arte e o
-   z-order dele) dispensa espelho, troca de lados e arte de costas inteiramente.
-2. **Ombro do WEST** no `Maia Chibi/Skeleton_Crusader_1`: o usuario relatou que precisa de "alguns pixels
+1. **Ombro do WEST** no `Maia Chibi/Skeleton_Crusader_1`: o usuario relatou que precisa de "alguns pixels
    pra esquerda". E caracteristica da arte de costas DELE, nao do rig -- o ajuste e arrastar no WEST e
    apertar "Salvar padrao do rig (camadas + posicoes)".
 
@@ -194,8 +190,51 @@ vistas foi feita a mao sobre `parseSCML`):
   arte por vista (`Body - Back.png`, `Head - L View.png`, `Right Arm - R View.png`) e uma pilha de camadas
   por vista. Pra esses, NADA precisa ser inventado: `NORTH <- Back`, `EAST <- Right`, `SOUTH <- Front`,
   `WEST <- Left`, cada um com a arte e o z-order dele, sem espelho nenhum.
-  O app AINDA NAO faz esse mapeamento: trata `Front - Idle` como idle e espelha o resto. Enquanto nao
-  fizer, esses 3 saem errados. A ordem de camadas deles ja esta certa desde a correcao acima.
+  **O app faz esse mapeamento** -- ver a secao abaixo.
+
+## Pacote com as 4 VISTAS nativas (`src/native-views.js`)
+
+`detectarVistasNativas(nomesDeAnimacao)` devolve `{north:'back', east:'right', south:'front', west:'left'}`
+quando o pacote tem as quatro, e `null` quando falta alguma -- meio caminho nao serve, e com duas vistas
+desenhadas e duas faltando o certo e continuar no fluxo normal (espelho + arte de costas) em vez de
+misturar os dois. Guardado em `state.nativeViews`, e dali:
+- `sourceRowFor(row)` devolve a propria linha e `isMirrored(row)` devolve false: cada direcao e DESENHADA.
+  O arranjo (`#sel-mirror-pairing`) nao se aplica.
+- `clipParaLinha(row, clipBase)` troca a vista mantendo a base: o seletor diz "Idle" e o NORTH toca
+  `Back - Idle`, o WEST toca `Left - Idle`. `clipPorNomeOuBase` aceita os dois no caminho inverso.
+- `basesComuns` alimenta o seletor de animacao com as BASES comuns as quatro vistas (5 opcoes em vez de
+  24). Uma base que falte em alguma vista fica de fora de proposito -- nesses pacotes o `Back` nao tem
+  "Idle Blinking", e oferecer ela deixaria uma linha vazia no bake.
+- Espelho, troca de lados em profundidade, troca de ombro, arte de costas por sufixo e o escudo-por-lado
+  ficam TODOS desligados. A arte de cada direcao ja vem dentro da animacao dela (a timeline do clip
+  `Back - Idle` referencia `Body - Back.png`), entao `state.rowArt` fica VAZIO -- e isso e o esperado, nao
+  sintoma de nada.
+
+Esses tres pacotes NAO tem `.unitypackage`: so AI/EPS/PNG com o `.scml`. Sem `detectRigProprioSemUnity`
+(renderer/app.js) eles caiam no rig EMPRESTADO -- o app descartava o `.scml` deles, montava o esqueleto do
+template e avisava "faltam 12 pecas", porque as pecas se chamam `Body - Front.png` e nao `Body.png`. A
+condicao pra assumir o rig da pasta e ter as QUATRO vistas, nao apenas ter um `.scml`: a pasta so-de-PNG do
+usuario tambem costuma ter um `Animations.scml` junto, e ali o certo continua sendo emprestar o rig do
+template.
+
+Os pseudo-bones do modo scml passaram a ser amostrados em TODOS os clips, nao so no primeiro: aqui cada
+vista tem as timelines dela (`Body - Front` e `Body - Back` sao pecas diferentes), entao uma animacao so
+revelaria um quarto das pecas.
+
+Dois bugs que so apareceram medindo o `.webp`, nao olhando a tela:
+- `bakeGrid` tratava NORTH/WEST como PLACEHOLDER quando `state.rowArt` da direcao estava vazio, e trocava o
+  clip deles pelo do EAST. Resultado: as tres linhas saiam **pixel-identicas** no arquivo (medido: 0.00% de
+  diferenca) enquanto o preview mostrava as quatro certas. `ownArt` em `rowsFor` agora e true pra toda
+  linha quando ha vistas nativas.
+- `computeScmlBounds` media o RETANGULO CHEIO do PNG. Nesses pacotes 40-60% da imagem e moldura
+  transparente, entao o auto-fit encolhia o personagem a um quarto da celula. Passou a aceitar
+  `alphaBoxes`, igual `computeAnimatedBounds` do caminho do Unity ja fazia: medido no Assassino, bounds de
+  320x370 viraram 178x295 e a escala foi de 0.748 pra 1.000. Vale pra TODO pacote em modo scml (inclusive
+  os de prefab binario), nao so pros de 4 vistas.
+
+Medido no bake do Assassino depois da correcao: as quatro linhas DIFERENTES entre si (1.3 a 1.8% dos
+pixels), escala 1.000, `north=Back - Idle`, `east=Right - Idle`, `south=Front - Idle`, `west=Left - Idle`,
+`mirror=false` nas quatro.
 
 ## As 4 direcoes, cada uma com arte e ajustes proprios (`renderer/app.js`)
 
