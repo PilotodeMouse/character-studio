@@ -210,12 +210,31 @@ misturar os dois. Guardado em `state.nativeViews`, e dali:
   `Back - Idle` referencia `Body - Back.png`), entao `state.rowArt` fica VAZIO -- e isso e o esperado, nao
   sintoma de nada.
 
-Esses tres pacotes NAO tem `.unitypackage`: so AI/EPS/PNG com o `.scml`. Sem `detectRigProprioSemUnity`
-(renderer/app.js) eles caiam no rig EMPRESTADO -- o app descartava o `.scml` deles, montava o esqueleto do
-template e avisava "faltam 12 pecas", porque as pecas se chamam `Body - Front.png` e nao `Body.png`. A
-condicao pra assumir o rig da pasta e ter as QUATRO vistas, nao apenas ter um `.scml`: a pasta so-de-PNG do
-usuario tambem costuma ter um `Animations.scml` junto, e ali o certo continua sendo emprestar o rig do
-template.
+## Pasta com RIG PROPRIO sem `.unitypackage` (`detectRigProprioSemUnity`)
+
+Dois tipos de pacote caem aqui, e nenhum dos dois tem `.unitypackage` -- so AI/EPS/PNG com o `.scml`:
+- os tres de 4 vistas acima (as pecas se chamam `Body - Front.png`, nao `Body.png`);
+- os de **CRIATURA**. Testado com o pack gratuito `free-monster-enemy-sprites-for-tower-defense`: 10
+  monstros, 3 a 7 pecas, animacoes `Idle / Attack / Walking ou Fly / Jump ou Fall / Dying` -- cinco deles
+  voadores. Mesma estrutura `Monster_N/PNG/Vector Parts/Animations.scml` dos chibis.
+
+Sem isto os dois caiam no rig EMPRESTADO: o app jogava fora o `.scml` deles, montava o esqueleto humanoide
+do template e avisava "faltam 8 pecas", prendendo a arte de um mosquito num cavaleiro.
+
+A condicao NAO pode ser so "tem `.scml`", porque a pasta so-de-PNG do usuario tambem costuma ter um
+`Animations.scml` junto e ali o certo continua sendo emprestar. O discriminador e MEDIDO: **o `.scml` da
+pasta tem alguma ANIMACAO que o template nao tem?**
+- `Maia Chibi/Golem_01`: as mesmas 18 do Skeleton Crusader -> e copia do mesmo rig, emprestar ou usar o
+  proprio da no mesmo, entao nao se mexe (conferido: inalterado depois da mudanca).
+- `Monster_1`: tem `Attack`/`Fly`/`Fall`, que o template nao tem -> e outro bicho, literalmente.
+
+Alem disso o `.scml` precisa ser AUTO-SUFICIENTE: toda peca que ele cita existe na pasta. Um `.scml` orfao,
+sem a arte, nao e rig nenhum.
+
+LIMITE que nenhum codigo resolve: esses pacotes nao tem arte de costas, entao NORTH sai igual a EAST e WEST
+igual a SOUTH. Pra criatura e pior que pra humanoide -- um inseto visto de tras nao e a lateral espelhada,
+e a maquinaria de ombro/escudo/mao-da-arma nao se aplica (ele nao tem maos). Quatro direcoes de verdade
+exigem alguem desenhar as costas.
 
 Os pseudo-bones do modo scml passaram a ser amostrados em TODOS os clips, nao so no primeiro: aqui cada
 vista tem as timelines dela (`Body - Front` e `Body - Back` sao pecas diferentes), entao uma animacao so
