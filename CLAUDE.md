@@ -6,15 +6,21 @@ completos de cada bug estao comentados nos proprios arquivos citados abaixo -- e
 
 ## Estado do repositorio agora
 
-Working tree tem mudancas AINDA NAO COMMITADAS em `src/`, `renderer/`, `main.js`, `scripts/`. Antes de
-qualquer coisa, rode `git status` e `git diff --stat` pra ver o tamanho real. Se ainda nao foi feito,
-commitar e dar push:
+Arvore LIMPA e em sincronia com `origin/master` (ultimo commit: a troca de lados completa nas direcoes
+espelhadas -- profundidade, ombro e escudo). Rode `git status` pra confirmar antes de assumir.
 
-```
-git add src renderer main.js scripts README.md CLAUDE.md
-git commit -m "fix: isola ajustes por personagem, mede alpha real, corrige amortecimento no bake; feat: arte de costas real e gerador de guias de template"
-git push origin master
-```
+`scratch-*` e ignorado pelo git: use esse prefixo (ou o diretorio temporario da sessao) pra qualquer
+arquivo de teste. Ja houve um `scratch-msg.txt` commitado por engano com `git add -A` -- adicione os
+arquivos pelo NOME, nunca `-A`.
+
+O QUE ESTA EM ABERTO:
+1. **Pacotes com as 4 vistas NATIVAS** (`Assassino`, `Robber`, `Thug` -- ver a secao "Duas GERACOES"). O
+   app ainda trata `Front - Idle` como idle e espelha o resto, entao esses 3 saem errados. O mapeamento
+   direto (`NORTH <- Back`, `EAST <- Right`, `SOUTH <- Front`, `WEST <- Left`, cada um com a arte e o
+   z-order dele) dispensa espelho, troca de lados e arte de costas inteiramente.
+2. **Ombro do WEST** no `Maia Chibi/Skeleton_Crusader_1`: o usuario relatou que precisa de "alguns pixels
+   pra esquerda". E caracteristica da arte de costas DELE, nao do rig -- o ajuste e arrastar no WEST e
+   apertar "Salvar padrao do rig (camadas + posicoes)".
 
 Remote confirmado com o usuario: `origin` = `https://github.com/PilotodeMouse/character-studio.git` (o
 nome do repo no GitHub e `character-studio`, NAO `isometric-character-studio` -- so o nome da pasta local
