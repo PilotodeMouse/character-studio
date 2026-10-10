@@ -277,6 +277,38 @@ function resolveFollowedDelta(boneName, overrides, seen) {
   return { dx, dy, dangle };
 }
 
+// TROCA DE OMBRO presa ao corpo.
+//
+// Numa direcao espelhada o bloco braco+mao+objeto muda de ombro (ver
+// applySideSwapDepth em renderer/app.js): o braco que era o de tras vira o da
+// frente e tem que se encaixar no ombro do outro lado. A distancia entre os
+// dois ombros e uma constante do rig -- 139px no Skeleton Crusader -- mas
+// guardar ela como um dx fixo em mundo trava o braco num ponto do ESPACO, nao
+// num ponto do CORPO: quando o corpo gira ou muda de escala durante a animacao,
+// o ombro sai do lugar e o braco desgruda.
+//
+// Entao o que fica guardado e o vetor medido na pose de referencia MAIS o
+// estado do corpo naquela hora, e aqui ele e recomposto com o estado do corpo
+// AGORA: gira pela diferenca de angulo e multiplica pela razao de escala. Corpo
+// parado -> mesma constante de antes; corpo girando -> o ombro acompanha.
+//
+// O corpo e lido da pose que ENTRA, antes dos ajustes manuais: a escala manual
+// de uma peca (o "Escala X/Y" da direcao) muda so o desenho dela e nao propaga
+// pela hierarquia, entao ela nao pode entrar nesta conta.
+function shoulderSwapDelta(spec, pose) {
+  if (!spec) return null;
+  const body = pose.find((p) => p.boneName === spec.bone);
+  if (!body) return { dx: spec.x, dy: spec.y || 0 };
+  const fx = spec.refScaleX ? body.world.scaleX / spec.refScaleX : 1;
+  const fy = spec.refScaleY ? body.world.scaleY / spec.refScaleY : 1;
+  const x = spec.x * fx;
+  const y = (spec.y || 0) * fy;
+  const rad = ((body.world.angle - (spec.refAngle || 0)) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return { dx: x * cos - y * sin, dy: x * sin + y * cos };
+}
+
 // Aplica correcoes manuais por osso (offset de posicao/angulo, pivo e
 // camada) SEM tocar nos dados extraidos do Unity -- e so uma camada por
 // cima, opcional, guardada a parte no rig-profile. Chame depois de
@@ -291,12 +323,13 @@ function applyManualOverrides(pose, overrides) {
     const o = overrides.get(item.boneName);
     if (!o) return item;
     const { dx, dy, dangle } = resolveFollowedDelta(item.boneName, overrides, new Set());
+    const ombro = shoulderSwapDelta(o.shoulderSwap, pose);
     const next = {
       ...item,
       world: {
         ...item.world,
-        x: item.world.x + dx,
-        y: item.world.y + dy,
+        x: item.world.x + dx + (ombro ? ombro.dx : 0),
+        y: item.world.y + dy + (ombro ? ombro.dy : 0),
         angle: item.world.angle + dangle,
         // Escala por peca (1 = tamanho original). Multiplica a escala do osso,
         // entao a peca cresce/encolhe EM TORNO DO PROPRIO PIVO -- continua
@@ -311,6 +344,10 @@ function applyManualOverrides(pose, overrides) {
       next.pivotOverride = { pivotX: o.pivotX, pivotY: o.pivotY };
     }
     if (o.zIndex !== undefined) next.zIndex = o.zIndex;
+    // Espelhar SO esta peca. Serve pro efeito de corte (SlashFX), que e um
+    // arco com direcao propria: quando a direcao inteira espelha, o arco pode
+    // acabar apontando pro lado contrario do golpe.
+    if (o.flipX) next.sprite = { ...next.sprite, flipX: !next.sprite.flipX };
     // Camada ocultada a mao (ex: o mesmo esqueleto sem escudo). O drawPose
     // pula quem tem alpha 0, entao some do preview E do bake.
     if (o.hidden) next.alpha = 0;
@@ -366,6 +403,7 @@ function mirrorCell(ctx, axisX) {
 }
 
 module.exports = {
+  shoulderSwapDelta,
   computePose,
   drawPose,
   mirrorCell,

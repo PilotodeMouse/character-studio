@@ -8,17 +8,28 @@ const fs = require('fs');
 const path = require('path');
 
 const { parseSCML } = require('../src/scml-parser');
+const {
+  wordsOf,
+  isHeldItemName,
+  isHandName,
+  nearestHandByItem,
+  sidesOfParts,
+  sideSwapDepthOrder,
+  maoDaArmaPorNome,
+  ladoDaCamera,
+  ehEscudo,
+} = require('../src/side-depth');
 const { computePose, drawPose, applyManualOverrides, findAnimatedAncestorName, computeAnimatedBounds, mirrorCell, applyHandTransplant } = require('../src/unity-skeleton');
 const { bakeGrid, canvasToWebpBuffer } = require('../src/baker');
 const { extractUnityPackage } = require('../src/unity-package');
 const { buildRig } = require('../src/unity-prefab');
-const { getZIndexByPartName } = require('../src/scml-zorder');
+const { getZIndexByPartName, buildZOrderIndex, zIndexAt } = require('../src/scml-zorder');
 const { computeAlphaBoxes } = require('../src/alpha-bounds');
 const { mergeImagesForRow, matchRowArtFiles } = require('../src/back-art');
 const { computeRigFingerprint, RigProfileStore, characterOffsetsByRow } = require('../src/rig-profile');
 const { detectCraftpixClassic, findArtOnlyDir, findRowArtDirs, DEFAULT_ANIMATION_MAP, ROW_ART_SUFFIXES } = require('../src/craftpix-profile');
 const { validateCharacterFolderName, validateGrid } = require('../src/validate');
-const { EXPORT, DEFAULT_SIZE, ROWS, MIRRORED_FROM, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
+const { EXPORT, DEFAULT_SIZE, ROWS, ARRANJOS, ARRANJO_PADRAO, cellSpecFor, fitScaleForBounds } = require('../src/vtt-standards');
 const { listTemplates, loadTemplate } = require('../src/rig-templates');
 const { computeScmlPose, clipsFromScml, computeScmlBounds } = require('../src/scml-rig');
 
@@ -40,7 +51,8 @@ let state = {
   // 'mirror' = espelho horizontal da direcao-fonte (SOUTH<-EAST, WEST<-NORTH),
   //            que e o que a Biblioteca do VTT faz numa entrega de 2 linhas.
   // NORTH e EAST sao sempre 'own': o padrao exige as duas desenhadas.
-  zIndexByName: new Map(),
+  zIndexByName: new Map(), // ordem de REFERENCIA (1a key da 1a animacao) -- lista de camadas
+  zOrderIndex: new Map(), // ordem por animacao e por instante -- desenho (ver src/scml-zorder.js)
   rigId: null,
   outputFolder: null,
   // Ajustes manuais INDEPENDENTES por vista: mexer no NORTH (costas) nao pode
@@ -277,26 +289,6 @@ function refreshAfterArtChange() {
 //
 // A troca e so em memoria: nada e escrito na pasta do personagem, e o bake
 // usa a arte que esta carregada. Recarregar o personagem volta tudo ao disco.
-// Peca que a mao segura (arma, escudo, efeito) -- por exclusao: o que nao e
-// parte do corpo. Assim Axe/Spear/Bow/Staff entram sozinhos, sem lista.
-// Compara por PALAVRA inteira ("Handaxe" e arma, nao mao). Escrito com split
-// em vez de regex de propósito: expressao com \b nesta base ja foi corrompida
-// duas vezes por edicao automatizada (o \b virando byte 0x08) -- ver a
-// checagem de caractere de controle em scripts/check-renderer-wiring.js.
-const BODY_WORDS = new Set(['arm', 'hand', 'leg', 'foot', 'feet', 'body', 'torso', 'hip', 'neck', 'head', 'face']);
-
-function wordsOf(name) {
-  return name.toLowerCase().split(/[^a-z]+/).filter(Boolean);
-}
-
-function isHeldItemName(n) {
-  return !wordsOf(n).some((w) => BODY_WORDS.has(w));
-}
-
-function isLimbName(n) {
-  return wordsOf(n).some((w) => w === 'arm' || w === 'hand');
-}
-
 // Direcoes que mostram as COSTAS. Importa pra decidir se as pecas Face* da
 // frente entram (ver mergeImagesForRow) -- de costas o rosto nao existe.
 const BACK_ROWS = new Set(['north', 'west']);
@@ -341,14 +333,31 @@ function imagesForDisplayRow(row, clipName = previewClipName()) {
   return merged;
 }
 
-// A direcao de onde uma linha tira pose/arte: ela mesma, ou a fonte do
-// espelho quando esta em modo 'mirror' (SOUTH<-EAST, WEST<-NORTH).
+// Arranjo em uso -- ver ARRANJOS em src/vtt-standards.js.
+function arranjo() {
+  const sel = document.getElementById('sel-mirror-pairing');
+  return ARRANJOS[(sel && sel.value) || ARRANJO_PADRAO] || ARRANJOS[ARRANJO_PADRAO];
+}
+
+// [de onde vem a animacao, espelha?] desta linha.
+function animacaoDe(row) {
+  return arranjo()[row] || [row, false];
+}
+
+// A direcao de onde uma linha tira a POSE. A ARTE e sempre da propria linha.
 function sourceRowFor(row) {
-  return MIRRORED_FROM[row] || row;
+  return animacaoDe(row)[0];
 }
 
 function isMirrored(row) {
-  return !!MIRRORED_FROM[row];
+  return animacaoDe(row)[1];
+}
+
+// Quem esta sendo espelhado na tela, so pra rotular. Numa troca de animacao a
+// fonte da pose pode nao ser "a outra do par", entao mostra a direcao que
+// fornece a animacao.
+function espelhoDe(row) {
+  return isMirrored(row) ? sourceRowFor(row) : null;
 }
 
 // Numa direcao espelhada, os ajustes DELA sao uma camada de CORRECAO por cima
@@ -359,6 +368,41 @@ function isMirrored(row) {
 function previewClipName() {
   const sel = document.getElementById('preview-sel-anim');
   return (sel && sel.value) || '';
+}
+
+// A direcao tem ORDEM DE CAMADAS propria? E uma pergunta diferente de
+// temAjuste: mover uma peca 3px pro lado nao e opiniao sobre profundidade, e a
+// automacao de profundidade nao pode ficar desligada por causa disso.
+// Campos que MEXEM na peca (posicao/forma), em oposicao aos que so dizem onde
+// ela entra na pilha ou se aparece. E o que o padrao do rig leva junto e o que
+// "Zerar ajustes desta direcao" apaga.
+const CAMPOS_DE_GEOMETRIA = ['dx', 'dy', 'dangle', 'pivotX', 'pivotY', 'scaleX', 'scaleY', 'dampX', 'dampY', 'dampAngle', 'followBone', 'flipX', 'shoulderSwap'];
+
+// Resumo curto do ajuste manual, pra linha da camada. So o que saiu do padrao.
+function resumoDoAjuste(o) {
+  if (!temGeometria(o)) return '';
+  const p = [];
+  if (o.dx) p.push(`x${o.dx > 0 ? '+' : ''}${Math.round(o.dx)}`);
+  if (o.dy) p.push(`y${o.dy > 0 ? '+' : ''}${Math.round(o.dy)}`);
+  if (o.dangle) p.push(`${Math.round(o.dangle)}graus`);
+  if (o.shoulderSwap) p.push(`ombro ${o.shoulderSwap.x > 0 ? '+' : ''}${Math.round(o.shoulderSwap.x)}`);
+  if (o.scaleX !== undefined && o.scaleX !== 1) p.push(`${Math.round(o.scaleX * 100)}%`);
+  if (o.scaleY !== undefined && o.scaleY !== 1 && o.scaleY !== o.scaleX) p.push(`v${Math.round(o.scaleY * 100)}%`);
+  if (o.pivotX !== undefined || o.pivotY !== undefined) p.push('pivo');
+  if (o.flipX) p.push('espelhada');
+  if (o.followBone) p.push(`segue ${o.followBone}`);
+  if (o.dampX || o.dampY || o.dampAngle) p.push('amortecida');
+  return p.join(' ');
+}
+
+function temGeometria(o) {
+  return !!o && CAMPOS_DE_GEOMETRIA.some((c) => o[c] !== undefined && o[c] !== 0 && o[c] !== false);
+}
+
+function temOrdemPropria(row) {
+  const tem = (m) => [...m.values()].some((o) => o.zIndex !== undefined);
+  if (tem(state.partOffsetsByRow[row])) return true;
+  return Object.values(state.clipOffsetsByRow[row] || {}).some(tem);
 }
 
 function temAjuste(row) {
@@ -405,44 +449,101 @@ function offsetsForDisplay(row) {
   return effectiveOffsets(row, previewClipName());
 }
 
-// Arma, escudo e afins sao pecas SOLTAS no rig: tem animacao propria em vez
-// de pendurar num osso de mao. Enquanto a pilha de camadas e a original isso
-// nao incomoda, porque cada uma foi animada junto com a mao certa. Mas ao
-// arrumar uma direcao espelhada a peca muda de lugar na pilha e fica do lado
-// da OUTRA mao, continuando a balancar com a antiga -- parece solta no ar.
+// Qual mao segura a ARMA (a outra e a do escudo).
+//
+// Primeiro pelo NOME da peca segurada: os pacotes Craftpix nomeiam em ingles e
+// o nome do osso nao muda quando o usuario troca a arte (Sword -> Axe.png).
+//
+// So se nenhum nome for reconhecido e que vai pela medida -- e a medida olha a
+// MAO, nao a peca. Medido no Skeleton Crusader, clip Slashing: a mao da espada
+// tem 103px de amplitude em x contra 37px da do escudo, mas as PECAS dao
+// espada 141 e escudo 140. O escudo viaja junto com o corpo no golpe, entao
+// pela peca da empate e as vezes inverte.
+function maoDaArma() {
+  if (state.maoDaArmaCache !== undefined) return state.maoDaArmaCache;
+  const decidir = () => {
+    if (!state.rig) return null;
+    const ordem = currentLayers(new Map()).map((l) => l.boneName);
+    const maos = ordem.filter(isHandName);
+    if (maos.length < 2) return null;
+    const porNome = maoDaArmaPorNome(ordem);
+    if (porNome) return porNome;
+
+    let melhor = null;
+    let maior = -1;
+    for (const clip of state.rig.clips) {
+      if (!clip.length) continue;
+      const faixa = new Map();
+      for (let i = 0; i <= 6; i++) {
+        for (const item of computePoseFn(clip, (i / 6) * clip.length, new Map())) {
+          if (!maos.includes(item.boneName)) continue;
+          const f = faixa.get(item.boneName) || { min: Infinity, max: -Infinity };
+          f.min = Math.min(f.min, item.world.x);
+          f.max = Math.max(f.max, item.world.x);
+          faixa.set(item.boneName, f);
+        }
+      }
+      for (const [nome, f] of faixa) {
+        if (f.max - f.min > maior) {
+          maior = f.max - f.min;
+          melhor = nome;
+        }
+      }
+    }
+    return melhor;
+  };
+  state.maoDaArmaCache = decidir();
+  return state.maoDaArmaCache;
+}
+
+// Nome mostrado na lista de camadas. Braco e mao viram MAIN (o lado da arma) e
+// OFF (o lado do escudo) -- e o vocabulario certo: o que importa nao e
+// esquerda/direita, e qual lado segura o que. O nome real do osso continua
+// sendo a chave interna; muda so o rotulo.
+function rotuloDaCamada(boneName) {
+  const palavras = wordsOf(boneName);
+  const parte = palavras.includes('hand') ? 'Hand' : palavras.includes('arm') ? 'Arm' : null;
+  if (!parte) return boneName;
+  const mao = maoDaArma();
+  if (!mao) return boneName;
+  const ladoDaArma = wordsOf(mao).includes('left') ? 'left' : 'right';
+  const lado = palavras.includes('left') ? 'left' : palavras.includes('right') ? 'right' : null;
+  if (!lado) return boneName;
+  return `${lado === ladoDaArma ? 'Main' : 'Off'} ${parte}`;
+}
+
+// Arma, escudo e afins sao pecas SOLTAS no rig: tem animacao propria em vez de
+// pendurar num osso de mao. Enquanto a pilha de camadas e a original isso nao
+// incomoda, porque cada uma foi animada junto com a mao certa. Mas ao arrumar
+// a pilha de uma direcao a peca fica do lado da OUTRA mao e continua
+// balancando com a antiga -- parece solta no ar.
 //
 // Entao: o que a mao segura acompanha sempre a mao MAIS PROXIMA na pilha
-// daquela direcao. Quando a mao mais proxima e a mesma de sempre (o caso
-// normal, EAST e NORTH sem mexer), nao ha o que transplantar e nada muda.
+// daquela direcao. Quando a mao mais proxima e a mesma de sempre, nao ha o que
+// transplantar e nada muda -- e o caso normal, INCLUSIVE nas direcoes
+// espelhadas: o espelho nao mexe na pilha, e a troca de lados em profundidade
+// (sideSwapDepthOrder) move o bloco braco+mao+objeto inteiro, junto.
 function handTransplantsFor(row) {
   if (!state.rig) return null;
-  const nearestHand = (order) => {
-    const out = new Map();
-    order.forEach((name, i) => {
-      if (!isHeldItemName(name)) return;
-      let best = null;
-      let bestDist = Infinity;
-      order.forEach((other, j) => {
-        if (!isLimbName(other) || !/hand/i.test(other)) return;
-        const d = Math.abs(i - j);
-        if (d < bestDist) {
-          bestDist = d;
-          best = other;
-        }
-      });
-      if (best) out.set(name, best);
-    });
-    return out;
-  };
-
   const names = (offsets) => currentLayers(offsets).map((l) => l.boneName);
-  const original = nearestHand(names(new Map())); // pilha como veio do .scml
-  const atual = nearestHand(names(offsetsForDisplay(row)));
+  const cru = names(new Map()); // pilha como veio do .scml
+  const agora = names(offsetsForDisplay(row));
 
+  // So reancora quando os DOIS LADOS trocaram de lugar na pilha. Mover UMA peca
+  // sozinha e ajuste de PROFUNDIDADE, nao troca de mao: o escudo continua na
+  // mao em que foi animado, so passou pra tras do corpo. Reancorar ali punha o
+  // escudo balancando com o braco do golpe -- medido no EAST do Skeleton
+  // Crusader, 140px de amplitude em vez dos 10px que ele tem de verdade.
+  const maos = (ordem) => ordem.filter((n) => wordsOf(n).includes('hand')).join('|');
+  if (maos(cru) === maos(agora)) return null;
+
+  const original = nearestHandByItem(cru);
+  const atual = nearestHandByItem(agora);
   const transplants = new Map();
   for (const [item, to] of atual) {
     const from = original.get(item);
-    if (from && from !== to) transplants.set(item, { from, to });
+    if (!from || from === to) continue;
+    transplants.set(item, { from, to });
   }
   return transplants.size ? transplants : null;
 }
@@ -456,9 +557,10 @@ function deliveredRows() {
 
 function currentRowCount() {
   const wanted = parseInt(document.getElementById('sel-row-count').value, 10) === 4 ? 4 : 2;
-  // Direcao espelhada com arte ou ajuste proprio precisa ir no arquivo: a
-  // Biblioteca so sabe espelhar, nao conhece esses ajustes.
-  const needsFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0);
+  // Precisa das 4 linhas quando alguma direcao FORA da entrega curta tem algo
+  // proprio -- a Biblioteca so sabe espelhar NORTH e EAST, nao conhece nem os
+  // seus ajustes nem uma direcao desenhada que ficou de fora.
+  const needsFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0 || !isMirrored(r));
   return needsFour ? 4 : wanted;
 }
 
@@ -525,6 +627,7 @@ async function loadFromDetected(detected, displayLabel) {
   // personagem que estava aberto continuavam vivos no state e desmontavam o
   // proximo a ser importado -- os offsets sao em pixels da arte de UM
   // personagem, nao tem sentido nenhum no outro.
+  state.maoDaArmaCache = undefined;
   state.partOffsetsByRow = { north: new Map(), east: new Map(), south: new Map(), west: new Map() };
   state.clipOffsetsByRow = { north: {}, east: {}, south: {}, west: {} };
   state.clipArtByRow = { north: {}, east: {}, south: {}, west: {} };
@@ -548,6 +651,7 @@ async function loadFromDetected(detected, displayLabel) {
   const scmlText = fs.readFileSync(detected.scmlPath, 'utf8');
   const parsedScml = parseSCML(scmlText);
   state.zIndexByName = getZIndexByPartName(parsedScml);
+  state.zOrderIndex = buildZOrderIndex(parsedScml);
 
   state.pivots = new Map();
   for (const files of Object.values(parsedScml.folders)) {
@@ -694,9 +798,30 @@ async function loadFromDetected(detected, displayLabel) {
   // So o NORTH: o WEST e espelho dele e herda a ordem ja arrumada. Gravar
   // zIndex no WEST tambem o faria contar como "tem ajuste proprio" e forcaria
   // o arquivo de 4 linhas sem necessidade.
-  if (!defaults && state.rowArt.north.size && state.partOffsetsByRow.north.size === 0) {
+  if (state.rowArt.north.size && !temOrdemPropria('north')) {
     applyBackViewDepth(state.partOffsetsByRow.north);
     log('NORTH: profundidade das camadas ja espelhada automaticamente.', 'ok');
+  }
+
+  // As direcoes ESPELHADAS: o espelho nao troca a profundidade dos dois lados
+  // do corpo, e sem essa troca a espada muda de mao quando o personagem se
+  // vira (ver sideSwapDepthOrder). A condicao e so sobre ORDEM -- dx/dy/escala
+  // da direcao nao impedem, sao outra conversa; ordem propria, essa sim, e do
+  // usuario e nao se mexe.
+  const trocadas = ROWS.filter((r) => isMirrored(r) && !temOrdemPropria(r) && applySideSwapDepth(r));
+  const escudosVirados = await arteDoEscudoPorLado();
+  if (trocadas.length) {
+    log(
+      `${trocadas.map((r) => r.toUpperCase()).join(' e ')}: lados trocados em profundidade, pra espada continuar na mesma mao do ` +
+        'personagem depois de virar. Isso obriga a entrega de 4 linhas: a Biblioteca sabe espelhar, nao sabe trocar os lados.',
+      'ok'
+    );
+  }
+  if (escudosVirados.length) {
+    log(
+      `Escudo por lado do corpo -- ${escudosVirados.join('; ')}. A face dele aponta pra fora do corpo, entao quem manda e de que lado o braco ficou, nao se a direcao mostra as costas.`,
+      'ok'
+    );
   }
 
   applyAutoFitScale();
@@ -765,6 +890,7 @@ function applyRigProfileIfKnown() {
   if (profile.framesIdle) document.getElementById('num-frames-idle').value = profile.framesIdle;
   if (profile.framesWalk) document.getElementById('num-frames-walk').value = profile.framesWalk;
   if (profile.rowCount) document.getElementById('sel-row-count').value = String(profile.rowCount);
+  if (profile.mirrorPairing) document.getElementById('sel-mirror-pairing').value = profile.mirrorPairing;
   document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
   document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
 
@@ -794,6 +920,12 @@ function applyRigProfileIfKnown() {
     document.getElementById('num-offset-x').value = mine.offsetX || 0;
     document.getElementById('num-offset-y').value = mine.offsetY || 0;
     notes.push(`Ajustes manuais de <b>${characterName}</b> restaurados.`);
+  }
+
+  if (profile.droppedMirroredOrder) {
+    notes.push(
+      `Descartei a ordem de camadas salva das direcoes ESPELHADAS (${profile.droppedMirroredOrder} pecas): o app calcula ela sozinho agora, trocando os lados em profundidade pra arma nao mudar de mao quando o personagem vira. Posicao, escala e pecas ocultas ficaram como estavam.`
+    );
   }
 
   if (profile.droppedCounterMirror) {
@@ -843,7 +975,12 @@ function applyRigProfileIfKnown() {
 // funcionam identicos dali pra frente.
 function computePoseFn(clip, t, offsets = state.partOffsets) {
   if (state.poseSource === 'scml') return computeScmlPose(clip.animation, t);
-  return computePose(state.rig, clip, t, state.zIndexByName, offsets);
+  // A ordem de camadas vale PARA ESTE CLIP NESTE INSTANTE, nao pro personagem
+  // inteiro: o Spriter deixa ela mudar no meio da animacao, e alguns pacotes
+  // usam isso (ver src/scml-zorder.js). Ajuste manual de zIndex continua
+  // ganhando -- quem aplica e applyManualOverrides, depois daqui.
+  const zDoMomento = zIndexAt(state.zOrderIndex, clip.name, t, state.zIndexByName);
+  return computePose(state.rig, clip, t, zDoMomento, offsets);
 }
 
 function computeBoundsFn(clip) {
@@ -887,18 +1024,24 @@ function rowsFor(cfg, kind) {
   const clipFor = { north: northClip, east: eastClip, south: eastClip, west: northClip };
 
   return deliveredRows().map((row) => {
-    const src = sourceRowFor(row);
-    const ownArt = row === 'east' || state.rowArt[row].size > 0;
+    const clip = clipFor[sourceRowFor(row)];
+    // Placeholder (a linha vira uma copia da pose de EAST) SO faz sentido pra
+    // direcao que mostra as COSTAS e nao tem arte de costas nenhuma. Direcao de
+    // FRENTE sempre tem arte: a base da Vector Parts. Antes isto era
+    // `row === 'east' || rowArt.size > 0`, e ai, num arranjo onde o SOUTH e uma
+    // direcao desenhada, ele caia no placeholder e o bake usava os ajustes do
+    // EAST -- inclusive a troca de lados que e do EAST, nao dele.
+    const ownArt = !BACK_ROWS.has(row) || state.rowArt[row].size > 0;
     return {
       row,
-      clip: clipFor[src],
+      clip,
       hasArt: ownArt,
-      images: imagesForDisplayRow(row, clipFor[src].name),
+      images: imagesForDisplayRow(row, clip.name),
       // sem arte propria a linha e so a pose de EAST -> usa os ajustes de EAST
-      partOffsets: ownArt ? effectiveOffsets(row, clipFor[src].name) : effectiveOffsets('east', clipFor.east.name),
+      partOffsets: ownArt ? effectiveOffsets(row, clip.name) : effectiveOffsets('east', clipFor.east.name),
       handTransplants: handTransplantsFor(row),
       mirror: isMirrored(row),
-      mirrorFrom: MIRRORED_FROM[row],
+      mirrorFrom: espelhoDe(row),
     };
   });
 }
@@ -918,7 +1061,7 @@ function previewBaseClip(cfg) {
 // edicao (espelhada ou propria).
 function updateRowControls() {
   const rowCountSel = document.getElementById('sel-row-count');
-  const forcedFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0);
+  const forcedFour = ['south', 'west'].some((r) => temAjuste(r) || state.rowArt[r].size > 0 || !isMirrored(r));
   if (forcedFour) rowCountSel.value = '4';
   rowCountSel.disabled = forcedFour;
 
@@ -931,7 +1074,7 @@ function updateRowControls() {
   sel.value = state.previewRow;
 
   const row = state.previewRow;
-  const mirrorable = MIRRORED_FROM[row];
+  const mirrorable = espelhoDe(row);
   const box = document.getElementById('row-mode-box');
   box.style.display = mirrorable ? 'flex' : 'none';
   if (mirrorable) {
@@ -944,6 +1087,9 @@ function updateRowControls() {
     currentRowCount() === 2
       ? 'A Biblioteca do VTT espelha SOUTH e WEST ao instalar.'
       : 'As 4 direcoes vao no arquivo.';
+  document.getElementById('mirror-pairing-note').textContent = ROWS.map(
+    (r) => `${r.toUpperCase()}: ${isMirrored(r) ? 'espelho de ' + sourceRowFor(r).toUpperCase() : 'desenhada'}`
+  ).join('  |  ');
 }
 
 // Troca a direcao que os controles (arrastar, camadas, pivo, arte) editam.
@@ -1043,11 +1189,14 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
   const src = sourceRowFor(row);
   const showsBack = BACK_ROWS.has(src);
   const previewClip = showsBack ? (cfg.hasNorthView && cfg.northClip) || baseClip : baseClip;
+  // Os AJUSTES continuam sendo os da propria linha, mesmo quando o movimento
+  // vem de outra: senao arrumar as camadas de uma direcao nao teria efeito
+  // nenhum, e o painel mostraria uma coisa e a tela desenharia outra.
   const offsets = effectiveOffsets(row, previewClip.name);
   const previewImages = imagesForDisplayRow(row, previewClip.name);
 
-  const rawPose = computePoseFn(previewClip, clampedT, offsets);
-  let pose = applyManualOverrides(rawPose, offsets);
+  let pose = applyManualOverrides(computePoseFn(previewClip, clampedT, offsets), offsets);
+
   const transplants = handTransplantsFor(row);
   if (transplants) {
     // t=0 da o encaixe da peca na mao antiga; dali ela vira filha rigida da
@@ -1144,7 +1293,7 @@ function drawRow(canvas, row, cfg, baseClip, clampedT, active) {
     // arquivo -- numa entrega de 2 linhas SOUTH e WEST aparecem aqui, mas
     // quem as gera e a Biblioteca. Tudo numa linha so estourava a celula.
     ctx.fillStyle = '#5b8cff';
-    ctx.fillText(row.toUpperCase() + (isMirrored(row) ? ` (espelho de ${MIRRORED_FROM[row].toUpperCase()})` : ''), 6, 6 + fs + 4);
+    ctx.fillText(row.toUpperCase() + (isMirrored(row) ? ` (espelho de ${espelhoDe(row).toUpperCase()})` : ''), 6, 6 + fs + 4);
     if (!deliveredRows().includes(row)) {
       ctx.fillStyle = 'rgba(91,140,255,.65)';
       ctx.fillText('a Biblioteca do VTT gera esta', 6, 6 + (fs + 4) * 2);
@@ -1271,6 +1420,7 @@ function selectPart(boneName) {
   document.getElementById('part-pivot-y').value = o.pivotY !== undefined ? o.pivotY : filePivot ? filePivot.pivotY : 1;
   document.getElementById('part-scale-x').value = Math.round((o.scaleX ?? 1) * 100);
   document.getElementById('part-scale-y').value = Math.round((o.scaleY ?? 1) * 100);
+  document.getElementById('part-flip-x').checked = !!o.flipX;
 
   const followSel = document.getElementById('part-follow-bone');
   const spriteBoneNames = boneName
@@ -1352,16 +1502,30 @@ function nomeDaArteGeral(row, pngName) {
 // personagem tem os PNGs dele com os mesmos nomes, entao o nome resolve na
 // pasta dele. Peca que nao existir la simplesmente nao e trocada.
 function captureRowDefaults() {
-  // SO o que e estrutural: ordem das camadas, peca oculta e qual arquivo cada
-  // peca usa. dx/dy/angulo/pivo/escala/amortecimento ficam de fora de
-  // proposito -- sao correcoes na arte de UM personagem, e herdar isso entre
-  // personagens e exatamente o erro que o formato v1 do perfil cometia (ver
-  // src/rig-profile.js): o proximo da serie chegava ja desmontado.
+  // Leva TUDO da peca, inclusive dx/dy/angulo/pivo/escala/amortecimento.
+  //
+  // Isto contraria o que o formato v1 do perfil fazia, e de proposito -- as
+  // duas situacoes so parecem iguais. O v1 guardava os ajustes no nivel do
+  // ESQUELETO, aplicava sozinho em todo mundo e regravava a cada bake: um
+  // ajuste num personagem chegava desmontando os outros, sem ninguem pedir e
+  // sem sinal nenhum. Aqui: e um BOTAO que o usuario aperta, so entra em
+  // personagem que nao tem ajuste proprio nenhum, aparece no log ao ser
+  // aplicado e tem "Zerar ajustes desta direcao" do lado pra desfazer.
+  //
+  // E o motivo de precisar existir: as vistas de COSTAS nao existem nos
+  // pacotes Craftpix -- nos inventamos elas a partir do rig de frente. Os
+  // ajustes que fazem a invencao fechar (o corpo sentar X px mais baixo, a
+  // cabeca de costas ser 6% menor, o escudo sair da mao) sao propriedade do
+  // RIG e da convencao de arte de costas, nao daquele personagem. No fluxo de
+  // skins todo mundo do mesmo rig tem os PNGs com os mesmos nomes e o mesmo
+  // tamanho de tela, entao a geometria bate. Sem herdar isso, produzir
+  // centenas de personagens quer dizer refazer o mesmo ajuste centenas de
+  // vezes.
   const estrutura = (offsets) => {
     const out = {};
     for (const [nome, o] of offsets) {
-      const guardar = {};
-      if (o.zIndex !== undefined) guardar.zIndex = o.zIndex;
+      const guardar = { ...o };
+      delete guardar.hidden;
       if (o.hidden) guardar.hidden = true;
       if (Object.keys(guardar).length) out[nome] = guardar;
     }
@@ -1447,11 +1611,36 @@ async function applyRowDefaults(defaults) {
   return pecas;
 }
 
+// Volta a direcao pro estado conhecido: sem ajuste manual nenhum e com a ordem
+// de camadas que o app calcula sozinho. A ARTE nao e tocada.
+//
+// Existe porque ajuste antigo esquecido e a maior fonte de "arrumei um e
+// quebrou outro" neste app: uma compensacao feita pra um bug continua la depois
+// que o bug morre, e ai ela E o bug. Sem isto, voltar ao zero e arrumar doze
+// pecas na mao.
+function onResetRow() {
+  const row = state.previewRow;
+  pushUndo();
+  state.partOffsetsByRow[row].clear();
+  state.clipOffsetsByRow[row] = {};
+  if (isMirrored(row)) applySideSwapDepth(row);
+  else if (BACK_ROWS.has(row) && state.rowArt[row].size) applyBackViewDepth(state.partOffsetsByRow[row]);
+  renderLayersList();
+  onPreviewTime();
+  log(`${row.toUpperCase()}: ajustes manuais zerados, ordem das camadas de volta ao automatico. A arte nao foi tocada. Ctrl+Z desfaz.`, 'ok');
+}
+
 function onSaveRowDefaults() {
   if (!state.rig || !state.rigId) return;
-  profileStore.saveRowDefaults(state.rigId, captureRowDefaults());
+  const defaults = captureRowDefaults();
+  profileStore.saveRowDefaults(state.rigId, defaults);
+  const comPosicao = ROWS.reduce(
+    (n, r) => n + Object.values((defaults[r] || {}).offsets || {}).filter((o) => temGeometria(o)).length,
+    0
+  );
   log(
-    `Arrumacao das 4 direcoes salva como padrao do rig ${state.rigId.slice(0, 8)}: os proximos personagens deste esqueleto ja abrem assim.`,
+    `Padrao do rig ${state.rigId.slice(0, 8)} salvo: ordem das camadas, pecas ocultas, arte por direcao` +
+      `${comPosicao ? ` e a POSICAO de ${comPosicao} peca(s)` : ''}. Os proximos personagens deste esqueleto abrem ja assim.`,
     'ok'
   );
 }
@@ -1497,8 +1686,9 @@ function renderLayersList() {
 
     row.innerHTML =
       `<span class="layer-handle">&#8942;&#8942;</span>` +
-      `<span class="layer-name"${hidden ? ' style="opacity:.45"' : ''}>${layer.boneName}` +
+      `<span class="layer-name"${hidden ? ' style="opacity:.45"' : ''}>${rotuloDaCamada(layer.boneName)}` +
       (pngName ? `<span class="layer-file">${artFileInUse(pngName)}</span>` : '') +
+      (resumoDoAjuste(layerOffsets.get(layer.boneName)) ? `<span class="layer-adjust">${resumoDoAjuste(layerOffsets.get(layer.boneName))}</span>` : '') +
       `</span>` +
       `<button class="layer-btn" data-action="hide" title="${hidden ? 'Mostrar esta peca' : 'Ocultar esta peca nesta direcao (ex: um esqueleto sem escudo)'}">${hidden ? '&#128065;' : '&#9898;'}</button>` +
       (canSwap ? `<button class="layer-btn" data-action="load" title="Trocar a arte desta peca">Arte</button>` : '') +
@@ -1585,6 +1775,143 @@ function applyBackViewDepth(offsets, lidoDe = offsets) {
   ordered.forEach((name, i) => {
     offsets.set(name, { ...(offsets.get(name) || {}), zIndex: i });
   });
+}
+
+// Clip que serve de POSE DE REFERENCIA pra medir o rig parado. "Base" existe
+// nesses pacotes justamente pra isso (e so a pose de montagem); sem ela, o Idle.
+function clipDeReferencia() {
+  const clips = state.rig.clips;
+  return clips.find((c) => /^base$/i.test(c.name)) || clips.find((c) => /^idle$/i.test(c.name)) || clips[0];
+}
+
+// Onde cada OMBRO fica em x na pose de referencia, e como o CORPO estava
+// naquela hora. O estado do corpo vai junto porque a troca de ombro fica presa
+// a ele (ver shoulderSwapDelta em src/unity-skeleton.js): guardar so a
+// distancia travaria o braco num ponto do espaco em vez de num ponto do corpo.
+function ombrosEmX() {
+  const clip = clipDeReferencia();
+  if (!clip) return null;
+  const pose = computePoseFn(clip, 0, new Map());
+  const corpo = pose.find((p) => wordsOf(p.boneName).includes('body'));
+  if (!corpo) return null;
+  const out = {};
+  for (const item of pose) {
+    const p = wordsOf(item.boneName);
+    if (!p.includes('arm')) continue;
+    const lado = p.includes('left') ? 'left' : p.includes('right') ? 'right' : null;
+    if (lado && out[lado] === undefined) out[lado] = item.world.x;
+  }
+  if (out.left === undefined || out.right === undefined) return null;
+  return {
+    ...out,
+    bone: corpo.boneName,
+    refAngle: corpo.world.angle,
+    refScaleX: corpo.world.scaleX,
+    refScaleY: corpo.world.scaleY,
+  };
+}
+
+// Grava a troca de lados nos ajustes da PROPRIA linha espelhada -- uma camada de
+// correcao por cima da fonte, como todo o resto do que se edita numa direcao
+// espelhada. Dali pra frente e do usuario: arrastavel, o valor aparece na lista
+// de camadas, Ctrl+Z desfaz, "Zerar ajustes desta direcao" apaga e o padrao do
+// rig leva pros proximos personagens.
+//
+// Sao DUAS coisas, e faltava a segunda:
+//  1. PROFUNDIDADE -- o bloco troca de lugar na pilha (sideSwapDepthOrder).
+//  2. OMBRO -- o bloco troca de lugar SOBRE O CORPO, em x. Os dois ombros nao
+//     estao no mesmo ponto: medido no Skeleton Crusader, o braco da arma nasce
+//     a 166px do pivo do corpo e o do escudo a 27px, 139px de distancia. Quando
+//     a perspectiva vira, o braco que era o de tras passa a ser o da frente e
+//     tem que se encaixar no ombro do outro -- senao ele vem pra frente do corpo
+//     ainda pendurado no ombro de tras, cobrindo o corpo no lugar errado.
+//
+// So dx, e so o bloco braco+mao+objeto. Em y os dois ombros diferem 6px (ruido
+// de perspectiva, nao lateralidade) e as pernas ficam de fora: elas trocam de
+// profundidade entre si, mas nascem praticamente no mesmo x.
+function applySideSwapDepth(row) {
+  const base = mergeOffsetLayers([state.partOffsetsByRow[sourceRowFor(row)], state.partOffsetsByRow[row]]);
+  const partindoDe = currentLayers(base).map((l) => l.boneName);
+  const ordered = sideSwapDepthOrder(partindoDe);
+  if (ordered.every((n, i) => n === partindoDe[i])) return false;
+
+  const offsets = state.partOffsetsByRow[row];
+  ordered.forEach((name, i) => {
+    offsets.set(name, { ...(offsets.get(name) || {}), zIndex: i });
+  });
+
+  const ombros = ombrosEmX();
+  if (ombros) {
+    const trocaDeOmbro = { left: ombros.right - ombros.left, right: ombros.left - ombros.right };
+    const lados = sidesOfParts(partindoDe);
+    const ehPerna = (n) => wordsOf(n).some((w) => w === 'leg' || w === 'foot' || w === 'feet');
+    for (const [nome, lado] of lados) {
+      if (ehPerna(nome)) continue;
+      const atual = offsets.get(nome) || {};
+      // Nao vira dx: vira um vetor preso ao corpo, recomposto quadro a quadro.
+      // dx continua livre pro usuario arrastar por cima.
+      offsets.set(nome, {
+        ...atual,
+        shoulderSwap: {
+          bone: ombros.bone,
+          x: trocaDeOmbro[lado],
+          y: 0, // em y os dois ombros diferem 6px -- ruido de perspectiva, nao lateralidade
+          refAngle: ombros.refAngle,
+          refScaleX: ombros.refScaleX,
+          refScaleY: ombros.refScaleY,
+        },
+      });
+    }
+  }
+  return true;
+}
+
+// Que FACE do escudo a camera ve depende de que lado do corpo o braco dele
+// ficou, nao de a direcao ser de costas. E por isso que o usuario resumiu assim:
+// "East usa o back do escudo, South a frente, West a frente, North o back" --
+// em WEST e SOUTH o braco do escudo e o mais perto da camera, e a face dele
+// aponta pra fora do corpo, ou seja, pra gente.
+//
+// Os DOIS lados da regra: de ca volta pra arte base (a face), de la procura a
+// arte de costas (`shield-back`) mesmo numa direcao que mostra a FRENTE do
+// personagem -- a peca tem orientacao propria e nao segue a da direcao.
+async function arteDoEscudoPorLado() {
+  const mudou = [];
+  if (!state.rig) return mudou;
+  const pngDoOsso = new Map(
+    [...state.rig.bones.values()].filter((b) => b.sprite && b.sprite.pngName).map((b) => [b.name, b.sprite.pngName])
+  );
+  const sufixosDeCostas = ROW_ART_SUFFIXES.north || [];
+
+  for (const row of ROWS) {
+    const ordem = currentLayers(effectiveOffsets(row, previewClipName())).map((l) => l.boneName);
+    for (const nome of ordem) {
+      if (!ehEscudo(nome)) continue;
+      const deCa = ladoDaCamera(ordem, nome);
+      const png = pngDoOsso.get(nome);
+      if (deCa === null || !png) continue;
+
+      if (deCa) {
+        if (!state.rowArt[row].has(png)) continue;
+        state.rowArt[row].delete(png);
+        state.rowArtFiles[row].delete(png);
+        state.partArtOverridesByRow[row].delete(png);
+        mudou.push(`${row.toUpperCase()}: ${nome} de frente`);
+        continue;
+      }
+
+      if (state.rowArt[row].has(png)) continue; // ja tem arte propria nessa direcao
+      for (const [from, requireSuffix] of state.rowArtSources[row] || []) {
+        const file = matchRowArtFiles(fs.readdirSync(from), [png], sufixosDeCostas, requireSuffix).get(png);
+        if (!file) continue;
+        state.rowArt[row].set(png, await loadImage(path.join(from, file)));
+        state.rowArtFiles[row].set(png, file);
+        mudou.push(`${row.toUpperCase()}: ${nome} de costas (${file})`);
+        break;
+      }
+    }
+  }
+  return mudou;
 }
 
 function mirrorDepthForBackView() {
@@ -1927,6 +2254,7 @@ async function onBakeClick() {
     offsetX: cfg.offsetX,
     offsetY: cfg.offsetY,
     rowCount: cfg.rowCount,
+    mirrorPairing: document.getElementById('sel-mirror-pairing').value,
     partOffsetsByRow: Object.fromEntries(ROWS.map((r) => [r, Object.fromEntries(state.partOffsetsByRow[r])])),
     clipOffsetsByRow: Object.fromEntries(
       ROWS.map((r) => [
@@ -2009,9 +2337,16 @@ document.getElementById('preview-sel-row').addEventListener('change', (e) => {
 document.getElementById('preview-chk-side').addEventListener('change', onPreviewTime);
 document.getElementById('btn-mirror-depth').addEventListener('click', mirrorDepthForBackView);
 document.getElementById('btn-save-row-defaults').addEventListener('click', onSaveRowDefaults);
+document.getElementById('btn-reset-row').addEventListener('click', onResetRow);
 document.getElementById('chk-edit-clip-only').addEventListener('change', (e) => {
   state.editClipOnly = e.target.checked;
   selectPart(state.selectedBone); // os campos passam a mostrar a camada que sera editada
+});
+document.getElementById('sel-mirror-pairing').addEventListener('change', () => {
+  selectPart(null);
+  updateRowControls();
+  renderLayersList();
+  onPreviewTime();
 });
 document.getElementById('sel-row-count').addEventListener('change', () => {
   updateRowControls();
@@ -2120,6 +2455,15 @@ function onScaleFieldInput(e) {
   }
   applyOffsetFieldsToSelected();
 }
+document.getElementById('part-flip-x').addEventListener('change', (e) => {
+  if (!state.selectedBone) return;
+  pushUndo();
+  const entry = { ...(state.partOffsets.get(state.selectedBone) || {}) };
+  if (e.target.checked) entry.flipX = true;
+  else delete entry.flipX;
+  state.partOffsets.set(state.selectedBone, entry);
+  onPreviewTime();
+});
 document.getElementById('part-scale-x').addEventListener('input', onScaleFieldInput);
 document.getElementById('part-scale-y').addEventListener('input', onScaleFieldInput);
 document.getElementById('part-pivot-x').addEventListener('input', applyOffsetFieldsToSelected);
@@ -2194,4 +2538,29 @@ function setMode(mode) {
 }
 document.getElementById('tab-craftpix').addEventListener('click', () => setMode('craftpix'));
 document.getElementById('tab-template').addEventListener('click', () => setMode('template'));
+
+// Gancho de MEDICAO, pros scripts que rodam dentro do Electron (ver
+// scripts/electron-shot.js). O renderer inteiro vive numa IIFE, entao sem isto
+// um teste so consegue conferir coisa por pixel -- e "a espada acompanha o
+// braco do golpe" e exatamente o tipo de afirmacao que precisa de numero, nao
+// de olhar. A UI nao usa nada daqui.
+window.__studio = {
+  state,
+  computePoseFn,
+  applyManualOverrides,
+  applyHandTransplant,
+  effectiveOffsets,
+  offsetsForDisplay,
+  currentLayers,
+  sidesOfParts,
+  sideSwapDepthOrder,
+  maoDaArma,
+  rotuloDaCamada,
+  handTransplantsFor,
+  isMirrored,
+  sourceRowFor,
+  previewClipName,
+  rowsFor,
+  readConfig,
+};
 })();

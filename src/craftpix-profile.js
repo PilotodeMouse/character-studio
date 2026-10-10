@@ -89,7 +89,18 @@ function findRowArtDirs(vectorPartsDir) {
 // funcionar tanto com uma pasta criada a mao quanto com uma copia de pacote a
 // que faltam os arquivos de rig.
 function findArtOnlyDir(characterDir) {
-  const candidatos = [characterDir, path.join(characterDir, 'PNG', 'Vector Parts'), path.join(characterDir, 'Vector Parts')];
+  // `PNG` sozinho entra na lista porque e onde o Corel/Illustrator despeja a
+  // exportacao por padrao: uma pasta so de PNGs dentro de PNG/, com a arte de
+  // costas (`*-back.png`) do lado da de frente. Sem ela, uma pasta assim
+  // simplesmente nao carregava -- o app nao achava arte nenhuma e nao dizia por
+  // que. `PNG/Vector Parts` vem ANTES pra nao confundir com o PNG/ de um pacote
+  // Craftpix completo, que guarda folha de sprite e nao peca.
+  const candidatos = [
+    characterDir,
+    path.join(characterDir, 'PNG', 'Vector Parts'),
+    path.join(characterDir, 'PNG'),
+    path.join(characterDir, 'Vector Parts'),
+  ];
   for (const dir of candidatos) {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) continue;
     const temArte = fs.readdirSync(dir).some((f) => /\.(png|svg)$/i.test(f));

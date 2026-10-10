@@ -69,6 +69,17 @@ importar como camada de fundo num software de vetor.
 
 ## Rede de seguranca
 
+Pra MEDIR o que o app faz (em vez de olhar a tela): `window.__studio` no fim de `renderer/app.js` expoe
+`state`, `computePoseFn`, `effectiveOffsets`, `currentLayers`, `rowsFor` e companhia. O renderer inteiro
+vive numa IIFE, entao sem isso um teste so consegue conferir por pixel -- e afirmacao como "a espada
+acompanha o braco do golpe" precisa de numero. Um harness Electron (nos moldes de `scripts/electron-shot.js`)
+abre o app, carrega o personagem e roda um `executeJavaScript` que le esse objeto. A UI nao usa nada dali.
+
+`node scripts/check-side-depth.js "<pasta com pacotes>" [--detalhe]` le so o `.scml` de cada personagem
+(nome + z_index de cada peca) e roda a regra de lado/profundidade em cima disso. Serve pra responder "isso
+vale pros meus outros personagens?" com numero em vez de achismo, e pra flagrar um pacote com nomenclatura
+diferente antes de abrir ele no app.
+
 `node scripts/check-renderer-wiring.js` roda sem abrir o Electron. Confere: todo modulo de `src/` carrega
 sozinho, todo nome desestruturado de um `require('../src/...')` existe de verdade nos exports daquele
 modulo, todo `getElementById` do renderer acha um `id=` real em `renderer/index.html`, e todo
@@ -107,8 +118,11 @@ personagem". Sem `.scml`/`.unitypackage` na pasta, `detectComRigEmprestado` (ren
 `avisarPecasFaltando` lista no log as pecas que o rig espera e a pasta nao tem -- numa pasta montada a mao,
 esquecer um PNG e o erro mais facil de cometer e o mais dificil de notar.
 
-`findArtOnlyDir` (`src/craftpix-profile.js`) aceita os PNGs soltos na pasta escolhida ou dentro de
-`PNG/Vector Parts`. A arte de costas e de cada personagem: `*-back.png` na propria pasta dele (o template
+`findArtOnlyDir` (`src/craftpix-profile.js`) aceita os PNGs soltos na pasta escolhida, em `PNG/Vector Parts`,
+em `PNG/` ou em `Vector Parts/`. `PNG/` sozinho entrou na lista porque e onde o Corel despeja a exportacao:
+sem ele, uma pasta assim nao carregava e o app nao dizia por que (caso real: `Maia Chibi/Golem_01`, com a
+arte e os `*-back.png` direto em `PNG/`). `PNG/Vector Parts` e testado ANTES pra nao confundir com o `PNG/`
+de um pacote Craftpix completo, que guarda folha de sprite e nao peca. A arte de costas e de cada personagem: `*-back.png` na propria pasta dele (o template
 NAO empresta arte, so o esqueleto).
 
 `templates/<id>/` continua guardando uma copia completa de UM personagem-base (so `skeleton-crusader` por
@@ -143,12 +157,140 @@ Nao perca tempo procurando por ali.
 - Medido depois da correcao: Idle Blinking vai Face 02 -> Face 01 -> Face 02 (chaves em 0.00/0.10/0.60) e
   Hurt fica em Face 03 o clip inteiro.
 
+## Ordem de camadas e POR ANIMACAO E POR INSTANTE (`src/scml-zorder.js`)
+
+O Spriter deixa a ordem de desenho ser diferente em qualquer ponto da timeline (manual do Spriter Pro 1.4,
+"Adjusting the Z Order of Sprites"). `getZIndexByPartName` le so a primeira key da primeira animacao: isso
+serve de REFERENCIA (e o que a lista de camadas mostra) e NAO serve pra desenhar.
+
+`buildZOrderIndex` monta o indice completo (por animacao, as ordens ao longo do tempo) e `zIndexAt` devolve
+a vigente em t -- em DEGRAU, nunca interpolada, porque entre uma ordem e outra nao existe meia ordem. Quem
+chama e `computePoseFn` (`renderer/app.js`), entao preview e bake seguem juntos. O caminho do `.scml`
+(`mainlineKeyAt` em `src/scml-rig.js`) ja fazia isso certo desde sempre; o furo era so no caminho do Unity.
+Ajuste manual de zIndex continua ganhando -- `applyManualOverrides` roda depois.
+
+Medido na biblioteca do usuario (1916 animacoes, 106 personagens):
+- **6 trocam a ordem NO MEIO da animacao**: `Demons_of_Darkness_1`, `Demons_of_Darkness_3` e `Lich`, nos
+  clips Slashing e Throwing -- o braco direito sobe e passa na frente da cabeca. Conferido dentro do app
+  depois da correcao: no Lich, exatamente esses 2 clips mudam e os outros 16 nao.
+- **57 tem ordem fixa porem diferente da referencia**: sao os 3 pacotes que trazem as 4 vistas no proprio
+  `.scml` (ver abaixo), onde cada vista tem a pilha dela.
+
+## Duas GERACOES de pacote Craftpix -- e so uma precisa da invencao de costas
+
+Varredura dos 106 personagens do usuario (`scripts/check-side-depth.js` mostra os nomes; a varredura de
+vistas foi feita a mao sobre `parseSCML`):
+- **103 sao de vista unica.** Nao existe arte de costas no pacote. NORTH/WEST sao inventados aqui a partir
+  do rig de frente + a arte de costas que o usuario desenhar. E toda a maquinaria de espelho, troca de
+  lados em profundidade e `rowDefaults` existe por causa deles.
+- **3 trazem as 4 vistas nativas** (`Assassino`, `Ladrao Pirata Ladino/Robber`, `Ladrao Pirata Ladino/Thug`):
+  24 animacoes nomeadas `Front - Idle`, `Right - Walking`, `Back - Attacking`, `Left - Hurt`..., 49 PNGs com
+  arte por vista (`Body - Back.png`, `Head - L View.png`, `Right Arm - R View.png`) e uma pilha de camadas
+  por vista. Pra esses, NADA precisa ser inventado: `NORTH <- Back`, `EAST <- Right`, `SOUTH <- Front`,
+  `WEST <- Left`, cada um com a arte e o z-order dele, sem espelho nenhum.
+  O app AINDA NAO faz esse mapeamento: trata `Front - Idle` como idle e espelha o resto. Enquanto nao
+  fizer, esses 3 saem errados. A ordem de camadas deles ja esta certa desde a correcao acima.
+
 ## As 4 direcoes, cada uma com arte e ajustes proprios (`renderer/app.js`)
 
 O padrao do VTT quer 4 linhas na ordem FIXA `NORTH, EAST, SOUTH, WEST` (`ROWS` em `src/vtt-standards.js`) --
 o jogo descobre a direcao pelo NUMERO da linha, nao por rotulo. NORTH e WEST mostram as COSTAS, EAST e SOUTH a
-FRENTE, e o par de espelho respeita isso: `SOUTH <- EAST` e `WEST <- NORTH` (`MIRRORED_FROM`). Nunca a linha 1
-virando a linha 3 -- espelho so troca uma pela outra dentro de um par que ja mostra o mesmo lado da figura.
+FRENTE, e o par de espelho respeita isso. Nunca a linha 1 virando a linha 3 -- espelho so troca uma pela
+outra dentro de um par que ja mostra o mesmo lado da figura.
+
+De onde cada linha tira a ANIMACAO, e se a celula sai espelhada, e escolha do usuario
+(`#sel-mirror-pairing`, `ARRANJOS` em `src/vtt-standards.js`, salvo no nivel do ESQUELETO). A ARTE e sempre
+da propria linha, nunca da fonte -- as de costas continuam com as pecas de costas em qualquer arranjo.
+- `padrao`: desenha NORTH e EAST; `SOUTH <- EAST` e `WEST <- NORTH` espelhados. E o que a folha de padroes
+  descreve pra entrega de 2 linhas.
+- `costas-desenhadas`: desenha NORTH e SOUTH; `WEST <- NORTH` e `EAST <- SOUTH`. Obriga 4 linhas -- a
+  Biblioteca so sabe espelhar NORTH e EAST, e o SOUTH desenhado nao caberia num arquivo de 2.
+
+**FONTE NUNCA PODE SER ESPELHADA** -- `check-renderer-wiring.js` recusa. Quem deriva de uma fonte le os
+ajustes dela (`effectiveOffsets`), e a correcao automatica do espelho e gravada na linha espelhada. Se a
+mesma linha for as duas coisas, a correcao dela vaza pra quem deriva. Aconteceu: `costas-desenhadas` estava
+escrito `east: ['east', true]` + `south: ['east', false]`, e a troca de ombro do EAST empurrava os bracos do
+SOUTH 139px pro lado. O certo e a linha DESENHADA ser a fonte: `south: ['south', false]` +
+`east: ['south', true]`.
+- `trocar-east-west`: parte do padrao e TROCA a animacao entre EAST e WEST. O WEST roda a animacao que era
+  do EAST (com a arte de costas dele) e o EAST a que era do WEST.
+
+**A ARMA FICA SEMPRE NA MESMA MAO**, automatico em toda linha ESPELHADA. O que muda e so a PROFUNDIDADE
+dos dois lados do corpo (`src/side-depth.js`, aplicado por `applySideSwapDepth` em `renderer/app.js`) -- a
+animacao de peca nenhuma e tocada.
+
+A regra mora em `src/side-depth.js`, fora do renderer, porque ela so depende de uma LISTA DE NOMES na ordem
+de desenho -- nada de DOM, canvas ou imagem. E o que permite `node scripts/check-side-depth.js "<pasta>"`
+rodar a mesma regra numa biblioteca inteira em segundos e dizer, ANTES de abrir o app, em quais personagens
+ela decide sozinha. Medido na biblioteca do usuario: 106 personagens Craftpix, 106 com a troca automatica.
+Os unicos nomes de peca segurada que aparecem em toda ela sao SlashFX, Sword, Weapon, Shield, Bow e Arrow;
+so 3 personagens nao seguram nada (e ai nao ha mao pra manter).
+
+O espelho do canvas troca esquerda/direita na TELA e nao mexe na profundidade: o braco que estava atras do
+corpo continua atras, e ai o personagem vira canhoto de um lado e destro do outro. Em vista lateral: o
+canhoto olhando pro EAST tem o lado esquerdo virado pra LONGE da camera (e por isso a Craftpix entrega as
+pecas "Left *" com z baixo, atras do corpo); olhando pro outro lado, o MESMO lado esquerdo fica virado PRA
+camera, e a mesma espada, na mesma mao, tem que aparecer NA FRENTE do corpo.
+
+- Sao DUAS trocas, nao uma. **Profundidade** (o bloco muda de lugar na pilha) E **OMBRO** (o bloco muda de
+  lugar sobre o corpo, em x). Os dois ombros nao estao no mesmo ponto: medido no Skeleton Crusader, o braco
+  da arma nasce a 166px do pivo do corpo e o do escudo a 27px -- 139px de distancia. Quando a perspectiva
+  vira, o braco que era o de tras passa a ser o da frente e tem que se encaixar NO OMBRO DO OUTRO; sem isso
+  ele vem pra frente do corpo ainda pendurado no ombro de tras e cobre o corpo no lugar errado. So `dx`, e
+  so o bloco braco+mao+objeto: em y os dois ombros diferem 6px (ruido de perspectiva) e as pernas nascem
+  praticamente no mesmo x. A medida sai de `ombrosEmX()` na pose de referencia (clip "Base", senao "Idle").
+
+  O deslocamento NAO e um `dx` fixo: e um vetor PRESO AO CORPO (`shoulderSwap` no offset ->
+  `shoulderSwapDelta` em `src/unity-skeleton.js`). Guardar como dx travaria o braco num ponto do ESPACO em
+  vez de num ponto do CORPO -- quando o corpo gira durante a animacao, o ombro sai do lugar. O que fica
+  gravado e o vetor medido na referencia MAIS o estado do corpo naquela hora (angulo e escala), e a cada
+  quadro ele e recomposto com o estado do corpo AGORA. O corpo e lido da pose que ENTRA em
+  `applyManualOverrides`, antes dos ajustes manuais: a escala manual de uma peca muda so o desenho dela e
+  nao propaga pela hierarquia, entao nao pode entrar nesta conta.
+  Medido no Slashing do Skeleton Crusader (o corpo gira 17 graus): o vetor mantem 139.3px de tamanho em
+  TODOS os instantes e gira exatamente junto com o corpo; o movimento proprio do braco fica intacto
+  (diferenca 0.00px). Com dx fixo o braco chegava a 34.6px fora do ombro no pico do golpe.
+- Cada bloco (braco + mao + o que ela segura) troca de slot INTEIRO, mantendo a ordem interna. Por BLOCO e
+  nao posicao por posicao: aqui o bloco da arma tem 4 pecas (SlashFX + Sword + Left Hand + Left Arm) e o do
+  escudo 3, e preenchendo slot a slot o SlashFX sobrava sozinho na regiao do outro bloco -- medido, a
+  amplitude de x dele saltava de 0 pra 57px, ou seja, passava a balancar com o braco errado.
+- As pernas trocam de lado entre elas, numa passada propria: no `.scml` elas ficam coladas no bloco de um
+  dos bracos, e numa passada so o bloco sairia grudado nelas.
+- A ordem sai gravada como `zIndex` nos ajustes da PROPRIA linha espelhada, no load, e so quando ela ainda
+  nao tem ajuste nenhum (ajuste do personagem manda, igual ao resto). Dali pra frente e ordem do usuario:
+  arrastavel, Ctrl+Z desfaz, "Salvar camadas como padrao do rig" leva pros proximos personagens.
+- Isso OBRIGA a entrega de 4 linhas (`temAjuste` -> `currentRowCount`): a Biblioteca sabe espelhar, nao sabe
+  trocar os lados, entao num arquivo de 2 linhas o personagem sempre troca de mao ao virar.
+- Confere com o que o usuario pediu a mao antes de existir automacao nenhuma: bloco `Right Arm + Right Hand
+  + Shield` "na base" no SOUTH e "no topo" no WEST. E confere com a ordem do NORTH que ele aprovou -- entre
+  a vista de frente e a de costas os dois lados tambem trocam de profundidade (`backViewDepthOrder`).
+- Medido (Slashing, Skeleton Crusader, perfil limpo): amplitude de x da `Sword` = 141px e da mao da arma =
+  103px nas QUATRO direcoes, `Shield` = 10px nas quatro, zero transplantes. Em toda direcao a espada
+  acompanha a mao que da o golpe e o escudo continua com o balanco dele.
+
+NAO troque a ANIMACAO entre os dois membros. Foi a tentativa anterior (`swapLimbTransforms`, removida):
+trocando os transforms, quem se mexe e a arte ERRADA -- o braco da espada passa a fazer o movimento parado
+do braco do escudo e a espada para de acompanhar o golpe. Nao tem compensacao possivel, porque o problema
+nao e de posicao, e de qual arte recebe qual movimento.
+
+MAIN HAND (a da arma) e OFF HAND (a do escudo), nao esquerda/direita: e o vocabulario que o usuario pediu e
+e como a lista de camadas rotula braco e mao (`rotuloDaCamada`, so o ROTULO -- o nome do osso continua sendo
+a chave em todo lugar). Quem e quem sai de `maoDaArma()`: primeiro pelo NOME do osso da peca segurada
+(`WEAPON_WORDS`/`SHIELD_WORDS`; o nome do osso nao muda quando o usuario troca a arte, Sword -> Axe.png), e
+so se nenhum nome for reconhecido e que vai pela medida. E a medida olha a MAO, nao a peca: no Slashing a
+mao da espada tem 103px de amplitude contra 37px da do escudo, mas as PECAS dao espada 141 e escudo 140 (o
+escudo viaja junto com o corpo no golpe), entao pela peca da quase empate e as vezes inverte -- foi o que
+aconteceu na primeira versao, que apontou a mao do escudo como Main Hand.
+
+Ha tambem uma caixa "Espelhar peca" por peca (`flipX` no offset -> `sprite.flipX` em
+`applyManualOverrides`), pro efeito de corte: o arco tem direcao propria e pode ficar apontando pro lado
+contrario do golpe depois de uma troca de arte. Nao e usada por automacao nenhuma, e correcao na mao.
+
+Por que o ARRANJO (`#sel-mirror-pairing`) continua sendo escolha e nao regra fixa: com as costas
+DESENHADAS, qual par de direcoes vale a pena desenhar depende de como o artista desenhou -- isso nao da pra
+deduzir do rig. Ja foram tentadas e removidas quatro automacoes pra lateralidade (modo 'own' por direcao,
+"manter armas na mesma mao", "virar braco do escudo" e a troca de animacao entre os bracos); a que ficou e a
+de profundidade, acima. Quem olha decide o resto.
 
 Duas entregas validas, `#sel-row-count`: **2 linhas** (so NORTH e EAST no arquivo, a Biblioteca espelha as
 outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo `own` obriga as 4
@@ -162,12 +304,17 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   Motivo: trocar o escudo no EAST trocava tambem no SOUTH, e "o back de uma peca nao quer dizer que ela tem
   de estar com outras pecas back" -- o mesmo escudo pode ser de costas numa direcao e de frente na outra.
   Defaults por vista: NORTH e WEST (as duas de COSTAS) comecam com a arte `-back`/`Costas` que existir, EAST
-  e SOUTH com a base. `hideFace` tira as pecas `Face*` quando a direcao mostra as costas E a cabeca foi
+  e SOUTH com a base. **O ESCUDO e a excecao**, e segue o LADO DO CORPO em que o braco dele ficou, nao a
+  direcao (`arteDoEscudoPorLado` + `ladoDaCamera`/`ehEscudo` em `src/side-depth.js`): um escudo e uma chapa
+  presa no antebraco com a face apontando pra fora do corpo, entao quando o braco dele e o mais perto da
+  camera e a FACE que aparece, e quando e o de tras aparece o verso. Resultado, que e exatamente como o
+  usuario resumiu: "East usa o back do escudo, South a frente, West a frente, North o back". Vale nos dois
+  sentidos -- numa direcao de FRENTE o escudo pode ir buscar o `shield-back`, e numa de COSTAS pode voltar
+  pra arte base.
+  Pelo mesmo motivo o escudo vai pra FRENTE do bloco dele nas direcoes espelhadas (`posicionarEscudoNoBloco`):
+  ele cobre o proprio braco. A ARMA nao -- ela e segurada pelo punho e a mao passa por cima do cabo, que e
+  por que `backViewDepthOrder` empurra o que e segurado pro fundo do bloco. `hideFace` tira as pecas `Face*` quando a direcao mostra as costas E a cabeca foi
   trocada.
-- `state.rowModes = {south, west}`: `'mirror'` (espelho da fonte, sem nada de seu) ou `'own'` (arte e ajustes
-  proprios). `setRowMode` para 'own' copia os ajustes da fonte pra comecar igual; carregar arte numa direcao
-  espelhada ja a torna propria sozinha. Direcao espelhada nao aceita arrasto (o que se ve ali e a fonte pelo
-  avesso).
 - O espelho e do CANVAS, nao da pose: `mirrorCell(ctx, axisX)` (`src/unity-skeleton.js`), celula por celula em
   torno do eixo do corpo, igual a Biblioteca -- espelhar a faixa inteira inverteria a ordem das colunas e
   tocaria a passada de tras pra frente. O preview usa o mesmo `mirrorCell`, entao tela e `.webp` batem.
@@ -184,9 +331,10 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   Quem LE a ordem pra reordenar/espelhar profundidade usa a EFETIVA, nao a camada que vai receber a escrita
   -- senao o primeiro arrasto dentro de uma animacao recalcula tudo a partir da ordem crua do `.scml` e as
   pecas saltam.
-- SOUTH e WEST sao SEMPRE espelho (`sourceRowFor`/`isMirrored` so olham `MIRRORED_FROM`). Nao ha modo 'own'
-  nem botao na barra da direcao: teve modo, "manter armas na mesma mao" e "virar braco do escudo", e tudo foi
-  removido a pedido -- complicava mais do que resolvia. Quem quiser SOUTH desenhado troca a arte peca a peca.
+- `sourceRowFor`/`isMirrored` so olham o pareamento em uso. Nao ha modo por direcao nem botao na barra: teve
+  modo 'own', "manter armas na mesma mao", "virar braco do escudo" e uma troca de lateralidade entre os
+  bracos, e TUDO foi removido a pedido -- complicava mais do que resolvia, e nenhum deles resolvia a
+  lateralidade de verdade. O que resolveu foi deixar o usuario escolher QUAL par e desenhado.
 - Direcao espelhada E EDITAVEL: os ajustes dela sao uma camada de CORRECAO (`overlayOffsets`) por cima dos da
   fonte; `offsetsForDisplay(row)` soma as duas pra camadas/hit-test, e o que se edita e so a de cima. Um sinal
   que ja mordeu: o hit-test desespelha o X do mouse (`canvasEventToLocalCraftpix` usa `state.lastCell.bodyAxisX`).
@@ -196,7 +344,13 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   antiga, boiando no ar. A peca vira FILHA RIGIDA da mao nova: o encaixe e medido uma vez na pose de
   referencia (t=0, como ela estava na mao antiga, via `relativeTo` em `pose-math.js`) e recomposto quadro a
   quadro com `combine`. Medido: local x/y/angulo do escudo na mao nova ficam constantes em todos os frames.
-  Quando a mao mais proxima nao mudou em relacao a pilha do `.scml`, nao ha transplante e nada muda.
+
+  So dispara quando as DUAS maos trocaram de lugar na pilha (`maos(cru) === maos(agora)` -> `null`). Mover
+  UMA peca sozinha e ajuste de PROFUNDIDADE, nao troca de mao: o escudo continua na mao em que foi animado,
+  so passou pra tras do corpo. Sem essa trava, arrumar a profundidade do escudo no EAST o reancorava na mao
+  da espada e ele passava a balancar junto com o golpe -- medido, 140px de amplitude em vez dos 10px que ele
+  tem. A troca automatica de lados nas linhas espelhadas move o bloco braco+mao+objeto inteiro, entao a mao
+  mais proxima continua a mesma e nao ha transplante nenhum ali.
 
   Nao adianta somar so a DIFERENCA entre as duas maos (foi a primeira tentativa e nao grudou): medido no
   Skeleton Crusader, no Walking a distancia do escudo pra qualquer osso varia de 60 a 150px -- ele nao esta
@@ -214,8 +368,26 @@ outras duas ao instalar) ou **4 linhas** (todas no arquivo). Uma direcao em modo
   A arte e gravada pra TODAS as pecas, inclusive as que usam o nome base. Pular as "iguais ao base" parecia
   economia e era bug: voltar o escudo do WEST pra `Shield.png` E uma escolha (direcao de costas comeca com
   `shield-back` por padrao), e descartando ela o proximo personagem voltava sozinho pro `-back`.
-  NAO entra dx/dy/angulo/pivo/escala/amortecimento: sao correcoes na arte de UM personagem, e herdar isso e
-  exatamente o erro que o formato v1 cometia (comentario grande no topo de `src/rig-profile.js`).
+
+  **ENTRA dx/dy/angulo/pivo/escala/amortecimento tambem** (botao "Salvar padrao do rig (camadas +
+  posicoes)"). Isso contraria o v1 de proposito, e as duas situacoes so PARECEM iguais -- se voce esta
+  lendo isto pensando em "consertar", leia o paragrafo inteiro antes. O v1 guardava os ajustes no nivel do
+  ESQUELETO, aplicava sozinho em todo mundo e regravava a cada bake: um ajuste num personagem chegava
+  desmontando os outros, sem ninguem pedir e sem sinal nenhum. Aqui e um BOTAO que o usuario aperta, so
+  entra em personagem sem ajuste proprio nenhum, o log diz quantas pecas vieram com posicao, a lista de
+  camadas MARCA quem tem ajuste (`resumoDoAjuste` -> `x+24 y+11`, em amarelo) e "Zerar ajustes desta
+  direcao" (`onResetRow`) desfaz.
+
+  O motivo de precisar existir: as vistas de COSTAS **nao existem** nos pacotes Craftpix. Elas sao
+  inventadas aqui a partir do rig de frente, e os ajustes que fazem a invencao fechar (o corpo sentar X px
+  mais baixo, a cabeca de costas ser 6% menor, o escudo sair da mao ao virar) sao propriedade do RIG e da
+  convencao de arte de costas, nao daquele personagem. No fluxo de skins todo mundo do mesmo rig tem os
+  PNGs com os mesmos nomes e o mesmo tamanho de tela, entao a geometria bate. Sem herdar isso, produzir
+  centenas de personagens quer dizer refazer o mesmo ajuste centenas de vezes -- que e exatamente o que o
+  app existe pra evitar.
+  Medido: com o padrao salvo no Skeleton_Crusader_1, o Skeleton_Crusader_2 abriu com as 9 pecas ajustadas
+  identicas nas 4 direcoes, mais 30 pecas de arte por direcao.
+
   Ajuste do proprio personagem tem prioridade: o padrao do rig so e aplicado quando as 4 direcoes dele
   estao vazias.
 - A lista de camadas mostra o ARQUIVO em uso (`artFileInUse`), nao o nome canonico da peca: depois de trocar

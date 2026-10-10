@@ -112,8 +112,54 @@ for (const file of sourceFiles) {
   }
 }
 
+// Funcao declarada DUAS VEZES no mesmo arquivo. O JS aceita (a ultima vence) e
+// nada quebra, entao isso passa despercebido -- ja aconteceu em
+// src/side-depth.js, onde duas edicoes seguidas deixaram `ladoDaCamera` e
+// `ehEscudo` duplicadas. O risco nao e hoje: e editar a copia de cima e nao
+// entender por que o comportamento nao muda.
+for (const dir of ['src', 'renderer']) {
+  for (const nome of fs.readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith('.js'))) {
+    const texto = fs.readFileSync(path.join(ROOT, dir, nome), 'utf8');
+    const vistas = new Map();
+    for (const linha of texto.split(String.fromCharCode(10))) {
+      const m = /^function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(linha);
+      if (m) vistas.set(m[1], (vistas.get(m[1]) || 0) + 1);
+    }
+    for (const [fn, n] of vistas) {
+      if (n > 1) {
+        problems.push(`${dir}/${nome}: function ${fn}() declarada ${n} vezes -- a ultima vence e as outras viram codigo morto`);
+      }
+    }
+  }
+}
+
+// ARRANJOS: uma direcao FONTE nunca pode ser espelhada.
+//
+// Quem deriva de uma fonte le os ajustes dela (effectiveOffsets), e a correcao
+// automatica do espelho (troca de lado em profundidade e de ombro) e gravada na
+// linha espelhada. Se a mesma linha for as duas coisas, a correcao do espelho
+// dela vaza pra quem deriva dela: medido, empurrou os bracos do SOUTH 139px
+// pro lado quando o EAST era espelhado e fonte ao mesmo tempo.
+const { ARRANJOS } = require(path.join(ROOT, 'src', 'vtt-standards'));
+let arranjosConferidos = 0;
+for (const [nome, arranjo] of Object.entries(ARRANJOS)) {
+  arranjosConferidos++;
+  for (const [linha, [fonte, espelha]] of Object.entries(arranjo)) {
+    if (!espelha) continue;
+    const derivadas = Object.entries(arranjo)
+      .filter(([outra, v]) => outra !== linha && v[0] === linha)
+      .map(([outra]) => outra);
+    if (derivadas.length) {
+      problems.push(
+        `ARRANJOS.${nome}: a linha ${linha} e ESPELHADA (de ${fonte}) e ao mesmo tempo e fonte de ${derivadas.join(', ')} -- ` +
+          'a correcao automatica do espelho dela vai vazar pra essas. Inverta: a linha desenhada e a fonte.'
+      );
+    }
+  }
+}
+
 console.log(
-  `Conferido: ${checked.modulos} modulos, ${checked.imports} imports, ${checked.ids} getElementById, ${checked.canais} canais IPC.`
+  `Conferido: ${checked.modulos} modulos, ${checked.imports} imports, ${checked.ids} getElementById, ${checked.canais} canais IPC, ${arranjosConferidos} arranjos.`
 );
 if (!problems.length) {
   console.log('OK -- nenhuma ponta solta.');

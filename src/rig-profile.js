@@ -28,8 +28,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { ARRANJOS, ARRANJO_PADRAO } = require('./vtt-standards');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function computeRigFingerprint(rig) {
   const names = [...rig.bones.values()]
@@ -63,6 +64,55 @@ function stripCounterMirror(characters) {
   return dropped;
 }
 
+// Quais direcoes saem ESPELHADAS no arranjo gravado neste perfil.
+function mirroredRowsOf(mirrorPairing) {
+  const arranjo = ARRANJOS[mirrorPairing] || ARRANJOS[ARRANJO_PADRAO];
+  return Object.entries(arranjo)
+    .filter(([, v]) => v[1])
+    .map(([row]) => row);
+}
+
+// MIGRACAO v3 -> v4: joga fora o zIndex (a ORDEM das camadas) das direcoes
+// ESPELHADAS -- so o zIndex, nada de dx/dy/escala/oculta.
+//
+// Por que: a ordem dessas direcoes deixou de ser trabalho manual. O app agora
+// calcula sozinho a troca de lado em profundidade que mantem a espada na mesma
+// mao do personagem depois que ele se vira (sideSwapDepthOrder em
+// renderer/app.js), e ordem propria salva GANHA da automatica -- ajuste do
+// personagem manda. Ou seja: quem arrumou essas direcoes a mao enquanto a
+// automacao nao existia ficaria preso na arrumacao antiga pra sempre, sem
+// sinal nenhum de por que o personagem continua trocando de mao ao virar.
+// As direcoes DESENHADAS nao sao tocadas: la a ordem e escolha de verdade.
+function stripMirroredRowOrder(raw) {
+  const rows = mirroredRowsOf(raw.mirrorPairing);
+  let dropped = 0;
+  const limpar = (offsets) => {
+    for (const part of Object.values(offsets || {})) {
+      if (part && part.zIndex !== undefined) {
+        delete part.zIndex;
+        dropped++;
+      }
+    }
+  };
+  for (const entry of Object.values(raw.characters || {})) {
+    if (!entry) continue;
+    for (const row of rows) {
+      limpar((entry.partOffsetsByRow || {})[row]);
+      for (const porClip of Object.values((entry.clipOffsetsByRow || {})[row] || {})) limpar(porClip);
+    }
+    // as copias de compatibilidade das duas primeiras direcoes
+    if (rows.includes('east')) limpar(entry.partOffsets);
+    if (rows.includes('north')) limpar(entry.partOffsetsNorth);
+  }
+  for (const row of rows) {
+    const d = (raw.rowDefaults || {})[row];
+    if (!d) continue;
+    limpar(d.offsets);
+    for (const c of Object.values(d.clips || {})) limpar(c.offsets);
+  }
+  return dropped;
+}
+
 function normalizeProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -72,6 +122,7 @@ function normalizeProfile(raw) {
     framesWalk: raw.framesWalk,
     hasNorthView: raw.hasNorthView,
     rowCount: raw.rowCount, // undefined nos perfis anteriores as 4 direcoes
+    mirrorPairing: raw.mirrorPairing || null, // quais duas direcoes sao desenhadas
     rowDefaults: raw.rowDefaults || null,
   };
 
@@ -86,6 +137,7 @@ function normalizeProfile(raw) {
     // depois da correcao. Quem LIGAR a opcao daqui pra frente grava em v3 e
     // nao passa mais por aqui.
     const dropped = Number(raw.version) < 3 ? stripCounterMirror(characters) : 0;
+    const droppedOrder = Number(raw.version) < 4 ? stripMirroredRowOrder({ ...raw, characters, rowDefaults: bake.rowDefaults }) : 0;
     return {
       ...bake,
       version: SCHEMA_VERSION,
@@ -93,6 +145,7 @@ function normalizeProfile(raw) {
       migratedFromV1: false,
       droppedPartOffsets: 0,
       droppedCounterMirror: dropped,
+      droppedMirroredOrder: droppedOrder,
     };
   }
 
@@ -160,7 +213,7 @@ class RigProfileStore {
   // Grava preferencias de bake (nivel esqueleto) + ajustes do personagem
   // (nivel personagem) numa tacada so, preservando o que ja estava la para
   // os OUTROS personagens.
-  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, scale, offsetX, offsetY, partOffsetsByRow, clipOffsetsByRow, rowModes }) {
+  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, mirrorPairing, scale, offsetX, offsetY, partOffsetsByRow, clipOffsetsByRow, rowModes }) {
     const current = this.read(rigId) || { characters: {} };
     const next = {
       version: SCHEMA_VERSION,
@@ -169,6 +222,7 @@ class RigProfileStore {
       framesWalk,
       hasNorthView,
       rowCount, // 2 (a Biblioteca espelha SOUTH/WEST) ou 4 (todas desenhadas)
+      mirrorPairing, // nivel esqueleto: a serie inteira herda
       rowDefaults: current.rowDefaults, // arrumacao padrao das direcoes (nivel esqueleto)
       characters: { ...current.characters },
     };
@@ -218,4 +272,4 @@ class RigProfileStore {
   }
 }
 
-module.exports = { computeRigFingerprint, RigProfileStore, normalizeProfile, characterOffsetsByRow, SCHEMA_VERSION };
+module.exports = { computeRigFingerprint, RigProfileStore, normalizeProfile, characterOffsetsByRow, mirroredRowsOf, SCHEMA_VERSION };
