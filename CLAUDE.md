@@ -6,8 +6,9 @@ completos de cada bug estao comentados nos proprios arquivos citados abaixo -- e
 
 ## Estado do repositorio agora
 
-Arvore LIMPA e em sincronia com `origin/master` (ultimo commit: a troca de lados completa nas direcoes
-espelhadas -- profundidade, ombro e escudo). Rode `git status` pra confirmar antes de assumir.
+Arvore LIMPA (ultimo commit: a caixa que liga/desliga a troca de lados, mais o gerador de rig a partir de
+pecas recortadas a mao). COMITADO E NAO ENVIADO -- rode `git status` e `git log origin/master..HEAD` pra
+confirmar antes de assumir.
 
 `scratch-*` e ignorado pelo git: use esse prefixo (ou o diretorio temporario da sessao) pra qualquer
 arquivo de teste. Ja houve um `scratch-msg.txt` commitado por engano com `git add -A` -- adicione os
@@ -17,6 +18,10 @@ O QUE ESTA EM ABERTO:
 1. **Ombro do WEST** no `Maia Chibi/Skeleton_Crusader_1`: o usuario relatou que precisa de "alguns pixels
    pra esquerda". E caracteristica da arte de costas DELE, nao do rig -- o ajuste e arrastar no WEST e
    apertar "Salvar padrao do rig (camadas + posicoes)".
+2. **Costas do personagem desenhado a mao** (`Maia Chibi/Teste-Recorte`): o usuario esta avaliando se adota
+   o fluxo de recortar as pecas ele mesmo. Faltam `head-back.png` e `body-back.png` (mesma tela 873x1201,
+   mesmo registro) pra NORTH e WEST deixarem de ser copia do EAST. NAO e pra tratar como decidido -- ele
+   deixou claro que ainda esta testando pra ver se vira processo ou nao.
 
 Remote confirmado com o usuario: `origin` = `https://github.com/PilotodeMouse/character-studio.git` (o
 nome do repo no GitHub e `character-studio`, NAO `isometric-character-studio` -- so o nome da pasta local
@@ -255,6 +260,50 @@ Medido no bake do Assassino depois da correcao: as quatro linhas DIFERENTES entr
 pixels), escala 1.000, `north=Back - Idle`, `east=Right - Idle`, `south=Front - Idle`, `west=Left - Idle`,
 `mirror=false` nas quatro.
 
+## Rig GERADO a partir de pecas recortadas a mao (`scripts/gerar-rig.js`)
+
+Pro personagem desenhado do zero nao existe `.scml` nenhum, e fazer um na mao exige aprender o Spriter.
+`node scripts/gerar-rig.js <pasta>` mede as pecas e escreve o `Animations.scml` com `Rig Base`, `Idle`
+(respiracao) e `Walk`. Dali pra frente e o `detectRigProprioSemUnity` de sempre -- nenhuma linha do app
+precisou mudar pra isso, e a pasta carrega como um pacote de criatura.
+
+A PASTA TEM QUE ESTAR EM REGISTRO: todas as pecas na MESMA tela, cada uma no lugar em que ela ja esta no
+desenho (duplica a imagem, apaga o que nao e a peca, exporta sem recortar). O script recusa telas
+divergentes. E o que da a pose de repouso de graca -- medido no primeiro personagem: montar as 6 pecas sem
+mover nada deu 0.57% de pixels diferentes da ilustracao original, que e so antialias de borda.
+NENHUM PNG E REESCRITO: o `.scml` aponta pras pecas como estao e leva o pivo como fracao da tela.
+
+As juntas saem medidas: membro pelo topo da calota arredondada, cabeca pelo centro do topo do tronco,
+tronco pelo centro na altura em que a perna mais alta comeca. `juntas.json` na pasta sobrescreve qualquer
+uma. Por isso o recorte precisa ULTRAPASSAR a junta e terminar em CURVA -- corte reto abre fatia vazia
+assim que o membro gira.
+
+Tres coisas que so apareceram medindo:
+- **A origem do mundo tem que ser o CHAO NO EIXO DO CORPO**, nao o canto da tela. `fitScaleForBounds`
+  posiciona a figura em relacao a origem (eixo x=128, chao y=416): com a origem no canto esquerdo o app le
+  "o personagem inteiro esta a direita do eixo" e encolhe pra caber nessa metade. Medido: escala 0.137 e
+  120px de largura numa celula de 256; corrigido, 0.257 e 225px.
+- **A duracao do clip nao muda um pixel do bake.** O baker amostra `t = (quadro * duracao) / totalDeQuadros`,
+  entao os quadros sempre cobrem UM ciclo: 1.8s e 0.5s geram os mesmos desenhos. Quem controla a velocidade
+  de reproducao e o VTT. O unico controle deste lado e quantos CICLOS cabem na folha (`--respiros`,
+  `--passadas`).
+- **ALIASING**: se o numero de quadros for multiplo do numero de ciclos, toda amostra cai na mesma fase e a
+  animacao sai CONGELADA. Medido com 2 respiros em 4 quadros: a cabeca ficou em 467 nos quatro. Regra: 4
+  quadros por ciclo, e o script imprime o minimo toda vez que roda.
+
+Num chibi de cranio enorme a cabeca NAO GIRA no idle, so sobe e desce: o pescoco fica fora do eixo do corpo
+(medido neste personagem: 42px a esquerda do quadril), entao um grau de rotacao vira dezenas de pixels de
+deslocamento lateral la em cima e o personagem parece bambear em vez de respirar. Foi reclamacao do usuario
+duas vezes, em dois caminhos diferentes (aqui e no `anima-estatica.js`).
+
+Arquivo com sufixo de vista (`body-back.png`, `head-costas.png`...) e ARTE DE DIRECAO, nao peca do rig: o
+script pula (`SUFIXOS_DE_VISTA`) e o app casa sozinho via `matchRowArtFiles`. Sem esse filtro o gerador
+aborta com "Duas pecas para body" no instante em que o usuario desenha as costas.
+
+Pegadinha de teste: o perfil do rig guarda a ESCALA. Um bake feito com o rig ainda errado grava a escala
+errada e ela volta no bake seguinte, mesmo com o rig ja corrigido -- parece que a correcao nao funcionou.
+Apagar o `.json` do rig em `~/.isometric-character-studio/rig-profiles/` zera.
+
 ## As 4 direcoes, cada uma com arte e ajustes proprios (`renderer/app.js`)
 
 O padrao do VTT quer 4 linhas na ordem FIXA `NORTH, EAST, SOUTH, WEST` (`ROWS` em `src/vtt-standards.js`) --
@@ -279,9 +328,27 @@ SOUTH 139px pro lado. O certo e a linha DESENHADA ser a fonte: `south: ['south',
 - `trocar-east-west`: parte do padrao e TROCA a animacao entre EAST e WEST. O WEST roda a animacao que era
   do EAST (com a arte de costas dele) e o EAST a que era do WEST.
 
-**A ARMA FICA SEMPRE NA MESMA MAO**, automatico em toda linha ESPELHADA. O que muda e so a PROFUNDIDADE
+**A ARMA FICA SEMPRE NA MESMA MAO** em toda linha ESPELHADA. O que muda e so a PROFUNDIDADE
 dos dois lados do corpo (`src/side-depth.js`, aplicado por `applySideSwapDepth` em `renderer/app.js`) -- a
 animacao de peca nenhuma e tocada.
+
+Isso tem uma CAIXA, `#chk-side-swap` ("Trocar os lados do corpo nas direcoes espelhadas"), gravada no
+perfil no nivel do ESQUELETO (`sideSwap`). Desmarcar chama `limparTrocaDeLado`, que tira so o que a troca
+escreveu (`zIndex` e `shoulderSwap`) e deixa dx/dy/escala/pivo/oculta do usuario em paz; Ctrl+Z desfaz.
+`sideSwap` no perfil e **tri-estado**: `true`, `false` ou **`null` quando o perfil nao falou no assunto**
+(todo perfil gravado antes da caixa existir). Nao colapse `null` em `true` no `normalize` -- e justamente o
+`null` que deixa o RIG escolher o valor inicial, em `ajustarPadraoDaTrocaDeLado`.
+
+E o valor inicial depende de o rig SABER das maos (`rigSabeDasMaos`): alguma peca tem que ser uma mao
+(`isHandName`) ou um objeto segurado (`isHeldItemName`). Sem isso nao existe "manter a arma na mesma mao" --
+a troca so manda o bloco do braco pra tras do corpo, e num rig desenhado a mao, com o escudo PINTADO DENTRO
+do braco numa peca so, ele SOME em duas das quatro direcoes. Entao ali a caixa nasce desmarcada, com o
+motivo no log. Todo pacote Craftpix tem `Left Hand`/`Right Hand` separados (medido: 106 de 106), entao
+nenhum deles muda de comportamento -- conferido abrindo `Golem_01` e `Skeleton_Crusader_1` com perfil
+limpo: `shoulderSwap=7` nas duas linhas espelhadas, igual a antes.
+
+Efeito colateral esperado: com a troca DESLIGADA o `currentRowCount` volta pra 2, porque era ela que
+obrigava as 4 linhas. Nao e perda -- a Biblioteca espelha as outras duas ao instalar.
 
 A regra mora em `src/side-depth.js`, fora do renderer, porque ela so depende de uma LISTA DE NOMES na ordem
 de desenho -- nada de DOM, canvas ou imagem. E o que permite `node scripts/check-side-depth.js "<pasta>"`
