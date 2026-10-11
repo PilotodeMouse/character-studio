@@ -6,9 +6,9 @@ completos de cada bug estao comentados nos proprios arquivos citados abaixo -- e
 
 ## Estado do repositorio agora
 
-Arvore LIMPA (ultimo commit: a caixa que liga/desliga a troca de lados, mais o gerador de rig a partir de
-pecas recortadas a mao). COMITADO E NAO ENVIADO -- rode `git status` e `git log origin/master..HEAD` pra
-confirmar antes de assumir.
+Arvore LIMPA e em sincronia com `origin/master` (ultimo commit: a caixa que liga/desliga a troca de lados,
+mais o gerador de rig a partir de pecas recortadas a mao). Rode `git status` pra confirmar antes de
+assumir.
 
 `scratch-*` e ignorado pelo git: use esse prefixo (ou o diretorio temporario da sessao) pra qualquer
 arquivo de teste. Ja houve um `scratch-msg.txt` commitado por engano com `git add -A` -- adicione os
