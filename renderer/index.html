@@ -261,6 +261,12 @@
           <option value="trocar-east-west">EAST e WEST trocam de animacao (sem espelho)</option>
         </select>
         <div id="mirror-pairing-note" style="color:var(--muted); font-size:11px; margin:4px 0 8px;"></div>
+
+        <label class="checkbox-row" title="Numa direcao espelhada o lado do corpo que estava longe da camera passa a ficar perto dela, entao o braco de tras tem de vir pra frente e se encaixar no outro ombro -- e o que mantem a arma na mesma mao do personagem. Desligue quando a arte nao tiver pecas separadas pra cada mao (por exemplo o escudo desenhado junto com o braco), porque ai o app nao tem como saber o que esta em qual mao.">
+          <input type="checkbox" id="chk-side-swap" checked />
+          Trocar os lados do corpo nas direcoes espelhadas
+        </label>
+        <div id="side-swap-note" style="color:var(--muted); font-size:11px; margin:4px 0 8px;"></div>
         <label>Escala do personagem dentro da celula (ajuste fino)</label>
         <input type="number" id="num-scale" value="1" step="0.05" min="0.1" max="3" />
         <div class="row">

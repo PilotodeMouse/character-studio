@@ -951,7 +951,20 @@ async function loadFromDetected(detected, displayLabel) {
   // vira (ver sideSwapDepthOrder). A condicao e so sobre ORDEM -- dx/dy/escala
   // da direcao nao impedem, sao outra conversa; ordem propria, essa sim, e do
   // usuario e nao se mexe.
-  const trocadas = state.nativeViews ? [] : ROWS.filter((r) => isMirrored(r) && !temOrdemPropria(r) && applySideSwapDepth(r));
+  // Num rig que nao tem MAO nem objeto segurado como peca propria, a troca nao
+  // tem o que decidir: ela existe pra manter a arma na mesma mao, e aqui nao ha
+  // mao nenhuma pra o app olhar. Num rig desenhado a mao o escudo costuma vir
+  // pintado dentro do braco, numa peca so -- e ai a troca manda o bloco inteiro
+  // pra tras do corpo e o escudo SOME em duas das quatro direcoes.
+  // Entao a caixa comeca DESMARCADA nesses rigs. Nao e automatismo escondido: a
+  // caixa continua mandando, isso so escolhe com que valor ela nasce, e so
+  // quando o perfil ainda nao disse nada. Os pacotes Craftpix todos tem
+  // `Left Hand`/`Right Hand` (medido: 106 de 106), entao nenhum deles muda.
+  ajustarPadraoDaTrocaDeLado();
+
+  const trocadas = !state.nativeViews && trocaDeLadoLigada()
+    ? ROWS.filter((r) => isMirrored(r) && !temOrdemPropria(r) && applySideSwapDepth(r))
+    : [];
   const escudosVirados = state.nativeViews ? [] : await arteDoEscudoPorLado();
   if (trocadas.length) {
     const temMao = !!maoDaArma();
@@ -1019,6 +1032,8 @@ function applyRigProfileIfKnown() {
   document.getElementById('sel-size').value = DEFAULT_SIZE;
   document.getElementById('num-offset-x').value = 0;
   document.getElementById('num-offset-y').value = 0;
+  document.getElementById('chk-side-swap').checked = true;
+  state.sideSwapDoPerfil = null; // ninguem escolheu ainda; ver ajustarPadraoDaTrocaDeLado
 
   const profile = profileStore.read(rigId);
   if (!profile) {
@@ -1036,6 +1051,12 @@ function applyRigProfileIfKnown() {
   if (profile.framesWalk) document.getElementById('num-frames-walk').value = profile.framesWalk;
   if (profile.rowCount) document.getElementById('sel-row-count').value = String(profile.rowCount);
   if (profile.mirrorPairing) document.getElementById('sel-mirror-pairing').value = profile.mirrorPairing;
+  // `null` = perfil antigo, que nao escolheu nada; ai quem decide o valor
+  // inicial e o rig (ajustarPadraoDaTrocaDeLado). Escolha gravada manda.
+  if (typeof profile.sideSwap === 'boolean') {
+    document.getElementById('chk-side-swap').checked = profile.sideSwap;
+    state.sideSwapDoPerfil = profile.sideSwap;
+  }
   document.getElementById('chk-has-north').checked = !!profile.hasNorthView;
   document.getElementById('sel-anim-north').disabled = !profile.hasNorthView;
 
@@ -1977,6 +1998,63 @@ function ombrosEmX() {
 // So dx, e so o bloco braco+mao+objeto. Em y os dois ombros diferem 6px (ruido
 // de perspectiva, nao lateralidade) e as pernas ficam de fora: elas trocam de
 // profundidade entre si, mas nascem praticamente no mesmo x.
+// A troca de lados pressupoe que o app CONSIGA dizer o que esta em cada mao --
+// e ela so consegue quando arma, escudo e mao sao pecas separadas no rig, que
+// e como a Craftpix entrega (medido: 106 de 106 personagens da biblioteca).
+// Num rig desenhado a mao o escudo costuma vir pintado junto com o braco, numa
+// peca so; ai nao ha o que manter na mesma mao, e a troca move o bloco inteiro
+// pra tras do corpo e some com o escudo. Por isso e uma CAIXA, ligada por
+// padrao: quem tem o rig completo nao perde nada, e quem desenhou o proprio
+// pode desligar sem precisar mexer em camada nenhuma.
+function trocaDeLadoLigada() {
+  const chk = document.getElementById('chk-side-swap');
+  return !chk || chk.checked;
+}
+
+// O rig consegue dizer o que esta em qual mao? So consegue se a mao -- ou o
+// objeto segurado -- for uma PECA propria. Nos pacotes Craftpix sempre e
+// (`Left Hand`, `Right Hand`, `Sword`, `Shield`...): medido, 106 de 106.
+// Num rig desenhado a mao o escudo costuma vir pintado dentro do braco, numa
+// peca so, e ai nao ha mao nenhuma pra olhar.
+function rigSabeDasMaos() {
+  const nomes = currentLayers(state.partOffsetsByRow.east).map((l) => l.boneName);
+  return nomes.some((n) => isHandName(n) || isHeldItemName(n));
+}
+
+// Com que valor a caixa NASCE num rig que o perfil ainda nao decidiu. Sem
+// mao nem objeto a troca nao tem o que manter na mesma mao: ela so joga o
+// bloco do braco pra tras do corpo, e o escudo pintado dentro dele SOME em
+// duas das quatro direcoes. Entao ali ela nasce desligada.
+// Isto nao e automatismo por cima do usuario -- escolha gravada no perfil tem
+// prioridade, e a caixa continua mandando a partir do primeiro clique.
+function ajustarPadraoDaTrocaDeLado() {
+  if (state.sideSwapDoPerfil !== null) return;
+  if (state.nativeViews || rigSabeDasMaos()) return;
+  document.getElementById('chk-side-swap').checked = false;
+  log(
+    'Troca de lados desligada por padrao: este rig nao tem peca de mao nem objeto segurado, ' +
+      'entao o app nao tem como saber o que esta em qual mao. Se o escudo estiver desenhado dentro ' +
+      'do braco, ligar a troca manda o bloco inteiro pra tras do corpo e ele some em duas direcoes. ' +
+      'A caixa "Trocar os lados do corpo nas direcoes espelhadas" continua sua.',
+    'ok'
+  );
+}
+
+// Tira o que a troca de lados escreveu (ordem das camadas e vetor de ombro),
+// sem encostar no que o usuario ajustou a mao: dx/dy/escala/pivo/oculta ficam.
+function limparTrocaDeLado(row) {
+  const offsets = state.partOffsetsByRow[row];
+  let mexeu = false;
+  for (const [nome, o] of [...offsets]) {
+    if (o.zIndex === undefined && o.shoulderSwap === undefined) continue;
+    const { zIndex, shoulderSwap, ...resto } = o;
+    if (Object.keys(resto).length) offsets.set(nome, resto);
+    else offsets.delete(nome);
+    mexeu = true;
+  }
+  return mexeu;
+}
+
 function applySideSwapDepth(row) {
   const base = mergeOffsetLayers([state.partOffsetsByRow[sourceRowFor(row)], state.partOffsetsByRow[row]]);
   const partindoDe = currentLayers(base).map((l) => l.boneName);
@@ -2403,6 +2481,7 @@ async function onBakeClick() {
     offsetY: cfg.offsetY,
     rowCount: cfg.rowCount,
     mirrorPairing: document.getElementById('sel-mirror-pairing').value,
+    sideSwap: trocaDeLadoLigada(),
     partOffsetsByRow: Object.fromEntries(ROWS.map((r) => [r, Object.fromEntries(state.partOffsetsByRow[r])])),
     clipOffsetsByRow: Object.fromEntries(
       ROWS.map((r) => [
@@ -2495,6 +2574,22 @@ document.getElementById('sel-mirror-pairing').addEventListener('change', () => {
   updateRowControls();
   renderLayersList();
   onPreviewTime();
+});
+document.getElementById('chk-side-swap').addEventListener('change', () => {
+  if (!state.rig) return;
+  pushUndo('side-swap');
+  const ligada = trocaDeLadoLigada();
+  const alvo = state.nativeViews ? [] : ROWS.filter((r) => isMirrored(r));
+  const mexidas = alvo.filter((r) => (ligada ? applySideSwapDepth(r) : limparTrocaDeLado(r)));
+  selectPart(null);
+  renderLayersList();
+  onPreviewTime();
+  log(
+    mexidas.length
+      ? `${mexidas.map((r) => r.toUpperCase()).join(' e ')}: troca de lados ${ligada ? 'LIGADA' : 'DESLIGADA'}. Ctrl+Z desfaz.`
+      : `Troca de lados ${ligada ? 'ligada' : 'desligada'} -- nenhuma direcao espelhada mudou.`,
+    'ok'
+  );
 });
 document.getElementById('sel-row-count').addEventListener('change', () => {
   updateRowControls();

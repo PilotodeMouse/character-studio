@@ -123,6 +123,12 @@ function normalizeProfile(raw) {
     hasNorthView: raw.hasNorthView,
     rowCount: raw.rowCount, // undefined nos perfis anteriores as 4 direcoes
     mirrorPairing: raw.mirrorPairing || null, // quais duas direcoes sao desenhadas
+    // `null` quando o perfil nao fala no assunto -- e e diferente de `true`.
+    // Perfil antigo (gravado antes da caixa existir) nao escolheu nada, entao
+    // quem decide o valor inicial e o RIG: um esqueleto sem peca de mao nao
+    // tem como dizer o que esta em qual mao, e ali a troca comeca desligada.
+    // Colapsar a ausencia em `true` aqui tiraria essa decisao do app.
+    sideSwap: typeof raw.sideSwap === 'boolean' ? raw.sideSwap : null,
     rowDefaults: raw.rowDefaults || null,
   };
 
@@ -213,7 +219,7 @@ class RigProfileStore {
   // Grava preferencias de bake (nivel esqueleto) + ajustes do personagem
   // (nivel personagem) numa tacada so, preservando o que ja estava la para
   // os OUTROS personagens.
-  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, mirrorPairing, scale, offsetX, offsetY, partOffsetsByRow, clipOffsetsByRow, rowModes }) {
+  saveForCharacter(rigId, characterName, { size, framesIdle, framesWalk, hasNorthView, rowCount, mirrorPairing, sideSwap, scale, offsetX, offsetY, partOffsetsByRow, clipOffsetsByRow, rowModes }) {
     const current = this.read(rigId) || { characters: {} };
     const next = {
       version: SCHEMA_VERSION,
@@ -223,6 +229,7 @@ class RigProfileStore {
       hasNorthView,
       rowCount, // 2 (a Biblioteca espelha SOUTH/WEST) ou 4 (todas desenhadas)
       mirrorPairing, // nivel esqueleto: a serie inteira herda
+      sideSwap: sideSwap !== false, // idem; ausente nos perfis antigos = ligada
       rowDefaults: current.rowDefaults, // arrumacao padrao das direcoes (nivel esqueleto)
       characters: { ...current.characters },
     };
