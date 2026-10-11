@@ -36,7 +36,9 @@ const { parseSCML } = require('../src/scml-parser');
 // tras. Tem que ser assim porque o rig continua animando os MESMOS ossos com
 // o MESMO clip; so a textura muda (ver src/back-art.js).
 const wantBack = process.argv.includes('--back');
-const args = process.argv.slice(2).filter((a) => a !== '--back');
+const iOpac = process.argv.indexOf('--opacidade');
+const OPACIDADE = iOpac >= 0 && process.argv[iOpac + 1] ? parseFloat(process.argv[iOpac + 1]) : 0.12;
+const args = process.argv.slice(2).filter((a, i, todos) => a !== '--back' && a !== '--opacidade' && todos[i - 1] !== '--opacidade');
 const characterDir = args[0];
 if (!characterDir) {
   console.error('Uso: node scripts/export-part-templates.js "<pasta do personagem-base>" [pasta-de-saida] [--back]');
@@ -65,7 +67,13 @@ fs.mkdirSync(outDir, { recursive: true });
 
     const srcPath = path.join(vectorPartsDir, part.name);
     if (fs.existsSync(srcPath)) {
-      ctx.globalAlpha = 0.12;
+      // --opacidade sobe o fantasma. 12% serve pra desenhar por cima num
+      // software de vetor, onde a referencia so precisa ser perceptivel. Pra
+      // usar o guia como REFERENCIA DE IA e o contrario: o modelo precisa
+      // enxergar a forma pra respeita-la, e a 12% ele ignora e compoe o que
+      // quiser -- medido, duas rodadas seguidas saindo com a cabeca/corpo em
+      // 1,13 e 1,21 onde o rig pede 1,95.
+      ctx.globalAlpha = OPACIDADE;
       ctx.drawImage(await loadImage(srcPath), 0, 0, part.width, part.height);
       ctx.globalAlpha = 1;
     }
